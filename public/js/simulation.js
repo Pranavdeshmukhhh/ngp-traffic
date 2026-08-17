@@ -1,5 +1,5 @@
 ﻿/* NGP-TRAFFIC Simulation Lab */
-var simState = { hour: 18, officers: 25, incidents: [], data: null, placingIncident: false };
+var simState = { hour: 18, officers: 25, data: null, placingIncident: false };
 var simMap, simHeatLayer, simJunctionGroup, simOfficerGroup, simIncidentGroup, simStations = [], simOfficers = [], presets = [];
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -15,16 +15,23 @@ document.addEventListener('DOMContentLoaded', function() {
     var type = document.getElementById('simIncType').value;
     var severity = document.getElementById('simIncSeverity').value;
     var desc = document.getElementById('simIncDesc').value || 'Simulated incident';
-    simState.incidents.push({
-      id: 'SIM-' + Date.now(),
-      name: type.replace(/_/g,' ').replace(/^\w/,function(c){return c.toUpperCase();})+' at clicked location',
+    var incidentData = {
+      name: type.replace(/_/g,' ').replace(/^\w/,function(c){return c.toUpperCase();}) + ' near ' + e.latlng.lat.toFixed(4) + ', ' + e.latlng.lng.toFixed(4),
       type: type, severity: severity, description: desc,
-      lat: e.latlng.lat, lng: e.latlng.lng, affectedRadius: severity==='high'?1000:600
+      lat: e.latlng.lat, lng: e.latlng.lng
+    };
+    // POST to server so it persists and shows on main dashboard
+    fetch('/api/incident?hour=' + simState.hour + '&officers=' + simState.officers, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(incidentData)
+    }).then(function(r) { return r.json(); })
+    .then(function() {
+      simState.placingIncident = false;
+      document.getElementById('simIncidentBanner').style.display = 'none';
+      simMap.getContainer().style.cursor = '';
+      refreshSim();
     });
-    simState.placingIncident = false;
-    document.getElementById('simIncidentBanner').style.display = 'none';
-    simMap.getContainer().style.cursor = '';
-    refreshSim();
   });
 
   Promise.all([
@@ -40,8 +47,8 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function refreshSim() {
+  // Fetch allocation from server (uses server-side activeIncidents)
   var url = '/api/allocation?hour=' + simState.hour + '&officers=' + simState.officers;
-  if (simState.incidents.length > 0) url += '&incidents=' + encodeURIComponent(JSON.stringify(simState.incidents));
   fetch(url).then(function(r){return r.json();}).then(function(data) {
     simState.data = data;
     renderSimMap(data);
@@ -66,7 +73,7 @@ function renderSimMap(data) {
     var icon = L.divIcon({ className:'', html:'<div style="background:#4a90d9;color:white;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);">&#128110;</div>', iconSize:[20,20], iconAnchor:[10,10] });
     L.marker([j.lat+0.0008,j.lng+0.0008], {icon:icon}).bindTooltip(dep[jid].name).addTo(simOfficerGroup);
   });
-  if (data.activeIncidents) {
+  if (data.activeIncidents && data.activeIncidents.length > 0) {
     data.activeIncidents.forEach(function(inc) {
       var icon = L.divIcon({ className:'', html:'<div style="width:16px;height:16px;background:#c94444;border-radius:50%;border:2px solid white;box-shadow:0 0 8px rgba(201,68,68,0.4);display:flex;align-items:center;justify-content:center;font-size:9px;color:white;">!</div>', iconSize:[16,16], iconAnchor:[8,8] });
       L.marker([inc.lat,inc.lng], {icon:icon}).bindPopup('<strong>'+inc.name+'</strong><br>'+inc.severity.toUpperCase()).addTo(simIncidentGroup);
@@ -131,21 +138,31 @@ function loadSimPreset(idx) {
   if (idx === '') return;
   var preset = presets[parseInt(idx)];
   if (!preset) return;
-  simState.incidents = preset.incidents.slice();
-  refreshSim();
+  // POST each preset incident to the server so they appear everywhere
+  var promises = preset.incidents.map(function(inc) {
+    return fetch('/api/incident?hour=' + simState.hour + '&officers=' + simState.officers, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(inc)
+    }).then(function(r) { return r.json(); });
+  });
+  Promise.all(promises).then(function() { refreshSim(); });
 }
 
 function clearSimIncidents() {
-  simState.incidents = [];
-  refreshSim();
+  // Clear server-side incidents so main dashboard clears too
+  fetch('/api/incident/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then(function() { refreshSim(); });
 }
 
 function resetSim() {
-  simState = { hour: 18, officers: 25, incidents: [], data: null, placingIncident: false };
+  simState = { hour: 18, officers: 25, data: null, placingIncident: false };
   document.getElementById('simTimeSlider').value = 18;
   document.getElementById('simTimeLabel').textContent = '6:00 PM';
   document.getElementById('simOfficerCount').value = 25;
   document.getElementById('presetSelect').value = '';
   document.getElementById('simIncidentForm').style.display = 'none';
-  refreshSim();
+  // Clear server-side incidents
+  fetch('/api/incident/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then(function() { refreshSim(); });
 }

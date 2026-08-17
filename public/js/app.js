@@ -19,6 +19,8 @@ document.addEventListener('DOMContentLoaded', function() {
   loadInitialData().then(function() {
     refreshData();
     hideLoading();
+    // Auto-refresh every 10 seconds to pick up incidents from Simulation Lab or Citizen App
+    setInterval(function() { if (isLiveMode()) refreshData(); }, 10000);
   });
 });
 
