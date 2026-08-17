@@ -775,3 +775,16 @@ body {
     border-bottom: 1px solid var(--border);
   }
 }
+/* ── Road Network ── */
+.road-segment { pointer-events: auto; }
+.road-tooltip {
+  background: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 4px !important;
+  font-family: var(--font) !important;
+  font-size: 11px !important;
+  padding: 3px 8px !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+  letter-spacing: 0.5px;
+}

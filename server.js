@@ -14,6 +14,7 @@ const junctions = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'nagpu
 const stations = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'police-stations.json'), 'utf8'));
 const officers = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'officers.json'), 'utf8'));
 const presetIncidents = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'preset-incidents.json'), 'utf8'));
+const roadSegments = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'road-segments.json'), 'utf8'));
 
 let activeIncidents = [];
 let manualOverrides = {};
@@ -100,6 +101,7 @@ app.get('/api/junctions', function(req, res) { res.json(junctions); });
 app.get('/api/stations', function(req, res) { res.json(stations); });
 app.get('/api/officers', function(req, res) { res.json(officers); });
 app.get('/api/preset-incidents', function(req, res) { res.json(presetIncidents); });
+app.get('/api/road-segments', function(req, res) { res.json(roadSegments); });
 
 app.get('/api/risk-scores', function(req, res) {
   var hour = parseInt(req.query.hour) || 14;

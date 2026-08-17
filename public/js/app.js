@@ -13,13 +13,16 @@ let state = {
   hour: 18,
   officerCount: 25,
   incidentMode: false,
-  searchFilter: ''
+  searchFilter: '',
+  roadSegments: []
 };
 
 // ── MAP VARIABLES ──
-let map, heatLayer, junctionLayerGroup, officerLayerGroup, stationLayerGroup, incidentLayerGroup;
+let map, heatLayer, junctionLayerGroup, officerLayerGroup, stationLayerGroup, incidentLayerGroup, roadLayerGroup, vehicleLayerGroup;
 let junctionMarkers = {};
 let officerMarkers = {};
+let vehicleAnimFrameId = null;
+let vehicles = [];
 
 
 // ── CHART ──
@@ -125,6 +128,8 @@ function initMap() {
   officerLayerGroup = L.layerGroup().addTo(map);
   stationLayerGroup = L.layerGroup().addTo(map);
   incidentLayerGroup = L.layerGroup().addTo(map);
+  roadLayerGroup = L.layerGroup().addTo(map);
+  vehicleLayerGroup = L.layerGroup().addTo(map);
 
   // Heatmap layer (empty initially)
   heatLayer = L.heatLayer([], {
@@ -148,13 +153,17 @@ async function loadInitialData() {
   try {
     var results = await Promise.all([
       fetch('/api/stations').then(function(r){ return r.json(); }),
+      fetch('/api/road-segments').then(function(r){ return r.json(); }),
       fetch('/api/officers').then(function(r){ return r.json(); }),
       fetch('/api/preset-incidents').then(function(r){ return r.json(); })
     ]);
     state.stations = results[0];
-    state.officers = results[1];
-    state.presetIncidents = results[2];
+    state.roadSegments = results[1];
+    state.officers = results[2];
+    state.presetIncidents = results[3];
     plotStations();
+    plotRoads();
+    initVehicleAnimation();
     populatePresets();
   } catch(err) {
     console.error('Failed to load data:', err);
@@ -279,6 +288,106 @@ function plotStations() {
       .bindTooltip(s.name, { direction: 'top', offset: [0, -14] })
       .addTo(stationLayerGroup);
   });
+}
+
+
+// ── ROAD NETWORK RENDERING ──
+function plotRoads() {
+  if (!state.roadSegments) return;
+  roadLayerGroup.clearLayers();
+  state.roadSegments.forEach(function(road) {
+    var latlngs = road.points.map(function(p){ return [p[0], p[1]]; });
+    var opacity = road.type === 'highway' ? 0.35 : 0.25;
+    var weight = road.type === 'highway' ? 5 : 3;
+    var color = road.traffic === 'heavy' ? '#f97316' : '#3b82f6';
+    L.polyline(latlngs, {
+      color: color,
+      weight: weight,
+      opacity: opacity,
+      dashArray: road.type === 'highway' ? null : '8 6',
+      lineCap: 'round',
+      lineJoin: 'round',
+      className: 'road-segment'
+    }).bindTooltip(road.name, { sticky: true, direction: 'top', className: 'road-tooltip' })
+    .addTo(roadLayerGroup);
+  });
+}
+
+// ── VEHICLE ANIMATION ──
+function initVehicleAnimation() {
+  if (!state.roadSegments) return;
+  vehicles = [];
+  state.roadSegments.forEach(function(road) {
+    var count = road.traffic === 'heavy' ? 4 : 2;
+    for (var i = 0; i < count; i++) {
+      vehicles.push(createVehicle(road, i / count));
+    }
+  });
+  animateVehicles();
+}
+
+function createVehicle(road, startProgress) {
+  var colors = ['#60a5fa','#34d399','#fbbf24','#f87171','#a78bfa','#fb923c'];
+  var color = colors[Math.floor(Math.random() * colors.length)];
+  var size = 4 + Math.floor(Math.random() * 3);
+  var speed = 0.0003 + Math.random() * 0.0004;
+  var wobble = (Math.random() - 0.5) * 0.0008;
+  var marker = L.circleMarker([0,0], {
+    radius: size,
+    fillColor: color,
+    color: 'rgba(255,255,255,0.5)',
+    weight: 1,
+    fillOpacity: 0.85,
+    opacity: 0.6
+  });
+  marker.addTo(vehicleLayerGroup);
+  return {
+    road: road,
+    progress: startProgress,
+    speed: speed,
+    wobbleX: wobble,
+    wobbleY: (Math.random() - 0.5) * 0.0008,
+    marker: marker,
+    direction: Math.random() > 0.5 ? 1 : -1
+  };
+}
+
+function interpolateRoadPos(points, progress) {
+  if (points.length < 2) return points[0];
+  var totalDist = 0;
+  var segDists = [];
+  for (var i = 1; i < points.length; i++) {
+    var d = Math.sqrt(Math.pow(points[i][0]-points[i-1][0],2) + Math.pow(points[i][1]-points[i-1][1],2));
+    segDists.push(d);
+    totalDist += d;
+  }
+  var targetDist = progress * totalDist;
+  var accum = 0;
+  for (var s = 0; s < segDists.length; s++) {
+    if (accum + segDists[s] >= targetDist) {
+      var segProgress = (targetDist - accum) / segDists[s];
+      return [
+        points[s][0] + (points[s+1][0] - points[s][0]) * segProgress,
+        points[s][1] + (points[s+1][1] - points[s][1]) * segProgress
+      ];
+    }
+    accum += segDists[s];
+  }
+  return points[points.length - 1];
+}
+
+function animateVehicles() {
+  vehicles.forEach(function(v) {
+    v.progress += v.speed * v.direction;
+    if (v.progress > 1) { v.progress = 1; v.direction = -1; }
+    if (v.progress < 0) { v.progress = 0; v.direction = 1; }
+    var pos = interpolateRoadPos(v.road.points, v.progress);
+    var wobblePhase = Date.now() * 0.001;
+    var lat = pos[0] + v.wobbleX * Math.sin(wobblePhase + v.progress * 10);
+    var lng = pos[1] + v.wobbleY * Math.cos(wobblePhase + v.progress * 7);
+    v.marker.setLatLng([lat, lng]);
+  });
+  vehicleAnimFrameId = requestAnimationFrame(animateVehicles);
 }
 
 // ── TABLE ──
@@ -483,6 +592,14 @@ function toggleLayer(layer) {
     document.getElementById('cbOfficers').checked ? map.addLayer(officerLayerGroup) : map.removeLayer(officerLayerGroup);
   } else if (layer === 'stations') {
     document.getElementById('cbStations').checked ? map.addLayer(stationLayerGroup) : map.removeLayer(stationLayerGroup);
+  } else if (layer === 'roads') {
+    document.getElementById('cbRoads').checked ? map.addLayer(roadLayerGroup) : map.removeLayer(roadLayerGroup);
+  } else if (layer === 'vehicles') {
+    if (document.getElementById('cbVehicles').checked) {
+      map.addLayer(vehicleLayerGroup);
+    } else {
+      map.removeLayer(vehicleLayerGroup);
+    }
   }
 }
 
