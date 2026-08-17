@@ -467,3 +467,64 @@ function haversineJS(lat1,lon1,lat2,lon2) {
   var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
+// ── Socket.IO Real-time ──
+var socket = typeof io !== 'undefined' ? io() : null;
+if (socket) {
+  socket.on('incident:new', function(data) {
+    showToast('NEW INCIDENT: ' + data.incident.name, 'high');
+    refreshData();
+  });
+  socket.on('deployment:update', function() { refreshData(); });
+  socket.on('incident:resolved', function(data) {
+    showToast('Incident resolved', 'low');
+    refreshData();
+  });
+  socket.on('incidents:cleared', function() { refreshData(); });
+  socket.on('officer:status', function(data) {
+    showToast('Officer ' + data.officerId + ': ' + data.status.status, 'medium');
+  });
+}
+
+// ── ML Metrics Modal ──
+function showMLMetrics() {
+  var modal = document.getElementById('mlModal');
+  modal.style.display = 'flex';
+  fetch('/api/ml/metrics').then(function(r){return r.json();}).then(function(data) {
+    var m = data.metrics;
+    var content = document.getElementById('mlMetricsContent');
+    content.innerHTML =
+      '<div style="background:#212d3f;border-radius:8px;padding:14px;text-align:center;"><div style="font-size:10px;color:#7a8ba5;text-transform:uppercase;">R\u00b2 Score</div><div style="font-size:26px;font-weight:800;color:#3dbc72;">' + m.r2.toFixed(4) + '</div></div>' +
+      '<div style="background:#212d3f;border-radius:8px;padding:14px;text-align:center;"><div style="font-size:10px;color:#7a8ba5;text-transform:uppercase;">RMSE</div><div style="font-size:26px;font-weight:800;color:#d4a72c;">' + m.rmse.toFixed(2) + '</div></div>' +
+      '<div style="background:#212d3f;border-radius:8px;padding:14px;text-align:center;"><div style="font-size:10px;color:#7a8ba5;text-transform:uppercase;">Accuracy</div><div style="font-size:26px;font-weight:800;color:#4a90d9;">' + (m.accuracy*100).toFixed(1) + '%</div></div>' +
+      '<div style="background:#212d3f;border-radius:8px;padding:14px;text-align:center;"><div style="font-size:10px;color:#7a8ba5;text-transform:uppercase;">F1 (Macro)</div><div style="font-size:26px;font-weight:800;color:#84cc16;">' + m.macroF1.toFixed(3) + '</div></div>' +
+      '<div style="background:#212d3f;border-radius:8px;padding:14px;grid-column:span 2;"><div style="font-size:10px;color:#7a8ba5;text-transform:uppercase;margin-bottom:6px;">Model Info</div><div style="font-size:12px;color:#dce3ed;">' + data.modelType + '<br>Training: ' + m.trainSize + ' samples | ' + data.featureNames.length + ' features<br>F1 High: ' + m.f1PerClass.high.toFixed(3) + ' | Med: ' + m.f1PerClass.medium.toFixed(3) + ' | Low: ' + m.f1PerClass.low.toFixed(3) + '</div></div>';
+
+    // Feature importance chart
+    var fi = data.featureImportance;
+    var labels = Object.keys(fi).sort(function(a,b){return fi[b]-fi[a];});
+    var values = labels.map(function(k){return fi[k];});
+    var ctx = document.getElementById('featureChart').getContext('2d');
+    if (window._fiChart) window._fiChart.destroy();
+    window._fiChart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels: labels.map(function(l){return l.replace(/_/g,' ');}), datasets: [{ label: 'Importance', data: values, backgroundColor: labels.map(function(_,i){return 'hsl(' + (200 + i*25) + ',60%,55%)';}) }] },
+      options: { indexAxis:'y', responsive:true, plugins:{legend:{display:false}}, scales:{x:{grid:{color:'#2a3a50'},ticks:{color:'#7a8ba5'}},y:{grid:{display:false},ticks:{color:'#dce3ed',font:{size:10}}}} }
+    });
+
+    // PvA chart
+    if (m.pvaCurve && m.pvaCurve.length > 0) {
+      var pvaCtx = document.getElementById('pvaChart').getContext('2d');
+      if (window._pvaChart) window._pvaChart.destroy();
+      window._pvaChart = new Chart(pvaCtx, {
+        type: 'scatter',
+        data: {
+          datasets: [
+            { label:'Predicted vs Actual', data:m.pvaCurve.map(function(p){return {x:p.actual,y:p.predicted};}), backgroundColor:'rgba(74,144,217,0.6)', pointRadius:3 },
+            { label:'Perfect', data:[{x:0,y:0},{x:100,y:100}], type:'line', borderColor:'rgba(61,188,114,0.4)', borderDash:[5,5], pointRadius:0 }
+          ]
+        },
+        options: { responsive:true, plugins:{legend:{labels:{color:'#7a8ba5'}}}, scales:{x:{title:{display:true,text:'Actual',color:'#7a8ba5'},grid:{color:'#2a3a50'},ticks:{color:'#7a8ba5'}},y:{title:{display:true,text:'Predicted',color:'#7a8ba5'},grid:{color:'#2a3a50'},ticks:{color:'#7a8ba5'}}} }
+      });
+    }
+  });
+}

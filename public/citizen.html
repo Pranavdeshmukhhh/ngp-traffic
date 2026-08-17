@@ -1,0 +1,216 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>NGP-TRAFFIC | Report Incident</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root { --bg:#0f1419; --surface:#1a2332; --card:#212d3f; --border:#2a3a50; --text:#dce3ed; --muted:#7a8ba5; --accent:#4a90d9; --green:#3dbc72; --red:#c94444; --orange:#d4a72c; --font:'Inter',sans-serif; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; min-height:100dvh; }
+    .app-header { background:var(--surface); border-bottom:1px solid var(--border); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; }
+    .app-header h1 { font-size:16px; font-weight:700; color:var(--red); }
+    .app-header .sub { font-size:10px; color:var(--muted); }
+    .app-header .badge { font-size:9px; background:rgba(201,68,68,0.15); color:var(--red); padding:3px 8px; border-radius:10px; font-weight:700; }
+    .container { max-width:480px; margin:0 auto; padding:16px; }
+    .section { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
+    .section-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:10px; }
+    .map-container { width:100%; height:220px; border-radius:8px; overflow:hidden; border:1px solid var(--border); position:relative; }
+    #citizenMap { width:100%; height:100%; }
+    .map-hint { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.7); color:white; text-align:center; font-size:11px; padding:6px; z-index:500; }
+    .loc-display { display:flex; gap:8px; margin-top:8px; font-size:11px; color:var(--muted); font-family:'JetBrains Mono',monospace; }
+    .loc-display span { background:var(--card); padding:4px 8px; border-radius:4px; flex:1; text-align:center; }
+    .form-group { margin-bottom:12px; }
+    .form-group label { display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:5px; text-transform:uppercase; letter-spacing:0.5px; }
+    .form-group select, .form-group input, .form-group textarea { width:100%; padding:10px 12px; background:var(--card); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:14px; border-radius:8px; outline:none; }
+    .form-group select:focus, .form-group input:focus, .form-group textarea:focus { border-color:var(--accent); }
+    .form-group textarea { resize:none; height:70px; }
+    .severity-group { display:flex; gap:8px; }
+    .sev-btn { flex:1; padding:10px; border:2px solid var(--border); background:var(--card); color:var(--muted); font-family:var(--font); font-size:12px; font-weight:700; border-radius:8px; cursor:pointer; text-align:center; transition:all 0.2s; }
+    .sev-btn.active { color:white; }
+    .sev-btn.high.active { border-color:var(--red); background:rgba(201,68,68,0.15); color:var(--red); }
+    .sev-btn.medium.active { border-color:var(--orange); background:rgba(212,167,44,0.15); color:var(--orange); }
+    .sev-btn.low.active { border-color:var(--green); background:rgba(61,188,114,0.15); color:var(--green); }
+    .photo-area { display:flex; align-items:center; gap:10px; padding:12px; background:var(--card); border:1px dashed var(--border); border-radius:8px; cursor:pointer; }
+    .photo-area .icon { font-size:24px; }
+    .photo-area .label { font-size:12px; color:var(--muted); }
+    .photo-area .label strong { color:var(--text); display:block; }
+    .btn-submit { width:100%; padding:14px; background:var(--red); color:white; border:none; font-family:var(--font); font-size:15px; font-weight:700; border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; }
+    .btn-submit:hover { background:#d55; }
+    .btn-submit:disabled { opacity:0.5; cursor:not-allowed; }
+    .success-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:none; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:24px; }
+    .success-overlay.show { display:flex; }
+    .success-icon { font-size:60px; margin-bottom:16px; }
+    .success-title { font-size:22px; font-weight:800; color:var(--green); margin-bottom:8px; }
+    .success-desc { font-size:14px; color:var(--muted); max-width:320px; line-height:1.6; margin-bottom:6px; }
+    .success-eta { font-size:18px; font-weight:700; color:var(--accent); margin:12px 0; }
+    .success-btn { padding:12px 32px; background:var(--accent); color:white; border:none; font-family:var(--font); font-size:14px; font-weight:700; border-radius:8px; cursor:pointer; margin-top:16px; }
+    .status-bar { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:10px 12px; display:flex; align-items:center; gap:8px; margin-bottom:12px; font-size:12px; }
+    .status-dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  </style>
+</head>
+<body>
+  <div class="app-header">
+    <div><h1>&#128680; Report Incident</h1><div class="sub">Nagpur City Traffic Safety</div></div>
+    <span class="badge">CITIZEN APP</span>
+  </div>
+
+  <div class="container">
+    <div class="status-bar">
+      <span class="status-dot"></span>
+      <span>Connected to NGP-TRAFFIC Control Room</span>
+    </div>
+
+    <div class="section">
+      <div class="section-title">&#128205; Incident Location</div>
+      <div class="map-container">
+        <div id="citizenMap"></div>
+        <div class="map-hint">Tap the map to set incident location</div>
+      </div>
+      <div class="loc-display">
+        <span id="locLat">Lat: --</span>
+        <span id="locLng">Lng: --</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">&#128221; Incident Details</div>
+      <div class="form-group">
+        <label>Type of Incident</label>
+        <select id="incType">
+          <option value="accident">&#128663; Road Accident</option>
+          <option value="waterlogging">&#127754; Waterlogging / Flooding</option>
+          <option value="road_block">&#128679; Road Block / Obstruction</option>
+          <option value="signal_failure">&#128678; Signal Failure</option>
+          <option value="reckless_driving">&#128664; Reckless Driving</option>
+          <option value="protest">&#128227; Protest / Rally</option>
+          <option value="other">&#128196; Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Severity</label>
+        <div class="severity-group">
+          <button class="sev-btn high active" onclick="setSeverity('high',this)">&#9888; HIGH</button>
+          <button class="sev-btn medium" onclick="setSeverity('medium',this)">&#9888; MEDIUM</button>
+          <button class="sev-btn low" onclick="setSeverity('low',this)">&#9432; LOW</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <textarea id="incDesc" placeholder="Describe the incident (e.g., two vehicles collided near the junction, traffic blocked...)"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Your Name (optional)</label>
+        <input type="text" id="reporterName" placeholder="Anonymous">
+      </div>
+      <div class="photo-area" onclick="document.getElementById('photoInput').click()">
+        <span class="icon">&#128247;</span>
+        <div class="label"><strong>Attach Photo</strong>Photo evidence (optional)</div>
+        <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
+      </div>
+    </div>
+
+    <button class="btn-submit" id="btnSubmit" onclick="submitIncident()" disabled>&#128680; Submit Incident Report</button>
+  </div>
+
+  <div class="success-overlay" id="successOverlay">
+    <div class="success-icon">&#9989;</div>
+    <div class="success-title">Report Submitted!</div>
+    <div class="success-desc">Your incident report has been sent to the NGP-TRAFFIC Command Center.</div>
+    <div class="success-desc" id="successDispatch"></div>
+    <div class="success-eta" id="successETA"></div>
+    <button class="success-btn" onclick="resetForm()">Report Another Incident</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    var selectedLat = null, selectedLng = null, selectedSeverity = 'high';
+    var marker = null;
+    var socket = io();
+
+    var citizenMap = L.map('citizenMap', { center:[21.1458,79.0882], zoom:13, attributionControl:false, zoomControl:false });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(citizenMap);
+
+    // Try geolocation
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(function(pos) {
+        citizenMap.setView([pos.coords.latitude, pos.coords.longitude], 15);
+        setLocation(pos.coords.latitude, pos.coords.longitude);
+      });
+    }
+
+    citizenMap.on('click', function(e) { setLocation(e.latlng.lat, e.latlng.lng); });
+
+    function setLocation(lat, lng) {
+      selectedLat = lat; selectedLng = lng;
+      document.getElementById('locLat').textContent = 'Lat: ' + lat.toFixed(5);
+      document.getElementById('locLng').textContent = 'Lng: ' + lng.toFixed(5);
+      if (marker) citizenMap.removeLayer(marker);
+      marker = L.marker([lat, lng], {
+        icon: L.divIcon({ className:'', html:'<div style="width:20px;height:20px;background:#c94444;border:3px solid white;border-radius:50%;box-shadow:0 0 10px rgba(201,68,68,0.5);"></div>', iconSize:[20,20], iconAnchor:[10,10] })
+      }).addTo(citizenMap);
+      document.getElementById('btnSubmit').disabled = false;
+    }
+
+    function setSeverity(sev, btn) {
+      selectedSeverity = sev;
+      document.querySelectorAll('.sev-btn').forEach(function(b){b.classList.remove('active');});
+      btn.classList.add('active');
+    }
+
+    function submitIncident() {
+      if (!selectedLat) return;
+      var btn = document.getElementById('btnSubmit');
+      btn.disabled = true;
+      btn.innerHTML = '&#8987; Sending...';
+
+      var data = {
+        name: document.getElementById('incType').selectedOptions[0].textContent.replace(/^..\s/,'') + ' — Citizen Report',
+        type: document.getElementById('incType').value,
+        severity: selectedSeverity,
+        lat: selectedLat,
+        lng: selectedLng,
+        description: document.getElementById('incDesc').value || 'Citizen report',
+        reportedBy: document.getElementById('reporterName').value || 'Anonymous Citizen'
+      };
+
+      fetch('/api/incident', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)
+      }).then(function(r){return r.json();}).then(function(result) {
+        var overlay = document.getElementById('successOverlay');
+        overlay.classList.add('show');
+        if (result.dispatch) {
+          document.getElementById('successDispatch').textContent = 'Officer ' + result.dispatch.officer.name + ' has been dispatched to the nearest junction (' + result.dispatch.junction.name + ').';
+          document.getElementById('successETA').textContent = 'Estimated Response: ' + (result.dispatch.eta || '~5') + ' minutes';
+        } else {
+          document.getElementById('successDispatch').textContent = 'The control room has been notified and will dispatch an officer shortly.';
+          document.getElementById('successETA').textContent = '';
+        }
+      }).catch(function() {
+        btn.disabled = false;
+        btn.innerHTML = '&#128680; Submit Incident Report';
+        alert('Failed to submit. Please try again.');
+      });
+    }
+
+    function resetForm() {
+      document.getElementById('successOverlay').classList.remove('show');
+      selectedLat = null; selectedLng = null;
+      if (marker) { citizenMap.removeLayer(marker); marker = null; }
+      document.getElementById('incDesc').value = '';
+      document.getElementById('reporterName').value = '';
+      document.getElementById('locLat').textContent = 'Lat: --';
+      document.getElementById('locLng').textContent = 'Lng: --';
+      var btn = document.getElementById('btnSubmit');
+      btn.disabled = true;
+      btn.innerHTML = '&#128680; Submit Incident Report';
+    }
+
+    socket.on('connect', function() { console.log('Connected to control room'); });
+  </script>
+</body>
+</html>

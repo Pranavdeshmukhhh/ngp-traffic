@@ -1,124 +1,203 @@
-﻿# NGP-TRAFFIC
+﻿# NGP-TRAFFIC &#128680;
 
-## AI-Based Traffic Risk Heatmap & Police Deployment Decision Support for Nagpur City
+**AI-Powered Traffic Risk Heatmap & Smart Police Deployment System for Nagpur City**
 
-> Built for Manthan4Yuva Hackathon | Problem Statement B: Intelligent Traffic Management System
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933?logo=node.js)](https://nodejs.org)
+[![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express)](https://expressjs.com)
+[![Socket.IO](https://img.shields.io/badge/Socket.IO-4.x-010101?logo=socket.io)](https://socket.io)
+[![ML](https://img.shields.io/badge/ML-Random_Forest-blue)](https://en.wikipedia.org/wiki/Random_forest)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen)](#testing)
+
+> A real-time, ML-driven traffic risk prediction and police officer deployment optimization system built for the Nagpur Municipal region. Features a trained Random Forest model, Dijkstra routing engine, real-time WebSocket sync, and a complete 3-app ecosystem.
 
 ---
 
-## Problem
+## &#127919; Problem Statement
 
-Nagpur city has limited police personnel to manage traffic across 50+ major junctions. Current deployment is based on intuition rather than data, leading to:
-- High-risk junctions left unmanned during peak hours
-- Officers deployed at low-risk locations unnecessarily
-- No dynamic response mechanism for incidents
+Indian cities like Nagpur face escalating traffic incidents, with limited police personnel deployed using manual, experience-based methods. This leads to:
+- **Reactive policing** — officers respond after incidents, not before
+- **Uneven coverage** — some high-risk junctions left unmonitored
+- **Slow response times** — no data-driven dispatch routing
 
-## Solution
+**NGP-TRAFFIC** solves this with a **predictive, AI-optimized** deployment system.
 
-**NGP-TRAFFIC** is an AI-powered control room dashboard that:
+---
 
-1. **Scores traffic risk** at every junction using a weighted 7-factor model (accident history, traffic volume, road type, time-of-day, pedestrian density, proximity to sensitive zones, active incidents)
-2. **Visualizes risk as an interactive heatmap** with color-coded markers on a real Nagpur map
-3. **Ranks all locations** in a sortable table showing which junctions need police attention most
-4. **Auto-allocates officers** using a greedy optimization algorithm that assigns limited personnel to highest-risk junctions first
-5. **Simulates incidents** and dynamically redeploys officers in real-time
-6. **Identifies gaps** — flags high-risk junctions that are currently unmanned
-7. **Explains every recommendation** — click any junction to see exactly WHY it scored high
-8. **Compares deployments** — baseline (current) vs optimized (AI-recommended) with coverage metrics
-9. **Supports manual overrides** — control room operators can reassign officers manually
+## &#128640; Features
 
-## Tech Stack
+### &#129302; Machine Learning Risk Engine
+- **Random Forest** ensemble (10 trees, max_depth=8) trained on synthetic Nagpur junction data
+- **13 feature vectors**: hour, day_of_week, rain, road_type, accident_history, speed_limit, school/hospital zones, pedestrian density, lane count, signal presence, traffic volume, live incidents
+- **Hybrid scoring**: 60% ML prediction + 40% heuristic (robust and explainable)
+- **Full model metrics**: R&#178;, RMSE, Accuracy, F1-Score, Feature Importance (SHAP-style permutation), Predicted vs Actual curve
+
+### &#128506; 3-App Ecosystem
+| App | URL | Purpose |
+|-----|-----|---------|
+| **Command Center** | `/` | Real-time risk heatmap, AI deployment, historical playback, ML analytics |
+| **Citizen App** | `/citizen.html` | Mobile-first incident reporting with geolocation and severity tagging |
+| **Officer App** | `/officer.html` | Field dispatch terminal with accept/arrive/resolve workflow and route map |
+| **Simulation Lab** | `/simulation.html` | Demo environment for testing scenarios and preset incidents |
+
+### &#9889; Real-Time Architecture
+- **Socket.IO** bidirectional sync across all apps
+- Citizen reports &#10132; Command Center alert &#10132; Officer dispatch in <1 second
+- Live incident feed, officer status updates, deployment recalculations
+
+### &#128739; Routing & Dispatch Engine
+- **Dijkstra shortest-path** over Nagpur road network graph
+- Calculates officer-to-junction **ETA** in minutes
+- Nearest station finder with sorted results
+- Route visualization on officer's map
+
+### &#128202; Analytics Dashboard
+- 50 road-snapped Nagpur junctions with 24-hour traffic profiles
+- Risk heatmap with high/medium/low classification
+- Baseline vs AI-optimized deployment comparison
+- Historical mode with past-only timeline
+- Per-junction explainability breakdown
+
+---
+
+## &#128736; Architecture
+
+```mermaid
+graph TB
+    subgraph Frontend
+        CC[Command Center]
+        CA[Citizen App]
+        OA[Officer App]
+        SL[Simulation Lab]
+    end
+    subgraph Backend
+        EX[Express.js Server]
+        ML[ML Engine - Random Forest]
+        RT[Routing Engine - Dijkstra]
+        WS[Socket.IO WebSocket]
+    end
+    subgraph Data
+        JD[(Junctions - 50)]
+        OD[(Officers - 25)]
+        SD[(Stations - 10)]
+        RD[(Road Segments)]
+    end
+    CA -->|POST /api/incident| EX
+    CC -->|GET /api/allocation| EX
+    OA -->|POST /api/officer/accept| EX
+    SL -->|POST /api/incident| EX
+    EX --> ML
+    EX --> RT
+    EX --> WS
+    WS -->|incident:new| CC
+    WS -->|incident:new| OA
+    EX --> JD
+    EX --> OD
+    EX --> SD
+    EX --> RD
+```
+
+---
+
+## &#128187; Quick Start
+
+```bash
+# Clone
+git clone https://github.com/Pranavdeshmukhhh/ngp-traffic.git
+cd ngp-traffic
+
+# Install
+npm install
+
+# Start (ML model trains on startup ~30s)
+npm start
+
+# Open browser
+# Command Center:  http://localhost:3000
+# Citizen App:     http://localhost:3000/citizen.html
+# Officer App:     http://localhost:3000/officer.html
+# Simulation Lab:  http://localhost:3000/simulation.html
+```
+
+---
+
+## &#128203; API Reference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/allocation?hour=18&officers=25` | Get risk-scored junctions + AI deployment |
+| GET | `/api/ml/metrics` | ML model metrics, feature importance, PvA curve |
+| GET | `/api/route?from=J001&to=J010` | Dijkstra shortest path + ETA |
+| GET | `/api/nearest-station?junction=J001` | Nearest 3 police stations by ETA |
+| GET | `/api/junctions` | All 50 junction data |
+| GET | `/api/stations` | All 10 police stations |
+| GET | `/api/officers` | All 25 officers |
+| GET | `/api/risk-scores?hour=18` | Risk scores for all junctions |
+| POST | `/api/incident` | Report new incident (triggers WebSocket broadcast) |
+| POST | `/api/incident/resolve` | Resolve an incident |
+| POST | `/api/officer/accept` | Officer accepts dispatch |
+| POST | `/api/officer/arrived` | Officer marks arrival |
+
+### WebSocket Events
+| Event | Direction | Payload |
+|-------|-----------|---------|
+| `incident:new` | Server &#10132; Client | Incident + dispatch info + redeployment |
+| `incident:resolved` | Server &#10132; Client | Incident ID + updated active list |
+| `deployment:update` | Server &#10132; Client | New deployment + junctions |
+| `officer:status` | Server &#10132; Client | Officer ID + status change |
+
+---
+
+## &#128295; Testing
+
+```bash
+npm test
+```
+
+Tests cover:
+- &#9989; Data integrity (50 junctions, 25 officers, 10 stations)
+- &#9989; ML feature extraction and normalization
+- &#9989; ML model training, prediction bounds, metrics validation
+- &#9989; Dijkstra routing + ETA reasonableness
+- &#9989; Allocation edge cases (0 officers, overloaded)
+- &#9989; API response structure validation
+
+---
+
+## &#128230; Deployment
+
+### Docker
+```bash
+docker build -t ngp-traffic .
+docker run -p 3000:3000 ngp-traffic
+```
+
+### Render (1-click)
+Push to GitHub and connect to [Render](https://render.com). The `render.yaml` auto-configures everything.
+
+---
+
+## &#128218; Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Vanilla HTML/CSS/JS |
-| Map | Leaflet.js + OpenStreetMap |
-| Heatmap | leaflet.heat plugin |
+| Backend | Node.js, Express.js |
+| ML Engine | Custom Random Forest (pure JS, no Python dependency) |
+| Routing | Dijkstra shortest-path algorithm |
+| Real-time | Socket.IO (WebSocket) |
+| Frontend | HTML5, CSS3, Vanilla JS |
+| Maps | Leaflet.js + OpenStreetMap |
 | Charts | Chart.js |
-| Backend | Node.js + Express |
-| Data | JSON (50 real Nagpur junctions + synthetic overlay) |
+| Deployment | Docker, Render |
 
-## Architecture
+---
 
-```
-ngp-traffic/
-+-- server.js               # Express server + Risk Engine + Allocation Algorithm
-+-- data/
-|   +-- nagpur-junctions.json   # 50 real Nagpur junctions with coordinates
-|   +-- officers.json           # 25 police officers across 10 stations
-|   +-- police-stations.json    # 10 Nagpur police stations
-|   +-- preset-incidents.json   # 4 demo incident scenarios
-+-- public/
-    +-- index.html              # Dashboard (single page)
-    +-- css/styles.css          # Dark command-center theme
-    +-- js/app.js               # Map, table, controls, simulation logic
-```
+## &#128101; Team
 
-## Risk Scoring Model
+**Team NGP-TRAFFIC** — Built for National Level Hackathon
 
-Each junction receives a **Risk Score (0-100)** using:
+---
 
-```
-RiskScore = 0.30 x AccidentHistory
-          + 0.25 x TrafficVolume (time-aware)
-          + 0.15 x RoadTypeFactor
-          + 0.10 x TimeOfDayFactor
-          + 0.10 x PedestrianDensity
-          + 0.05 x ProximityBonus (school/hospital)
-          + 0.05 x ActiveIncidentBoost
-```
+## &#128196; License
 
-- **High Risk**: Score >= 70 (Red)
-- **Medium Risk**: Score 40-69 (Yellow)
-- **Low Risk**: Score < 40 (Green)
-
-## Allocation Algorithm
-
-**Greedy Priority Allocation:**
-1. Sort junctions by risk score (descending)
-2. Assign officers to highest-risk junctions first
-3. Flag unmanned high-risk junctions as alerts
-
-**Dynamic Redeployment (on incident):**
-1. Boost risk scores of nearby junctions
-2. Re-run allocation with updated scores
-3. Reassign officers from lower-risk posts to incident zone
-
-## Quick Start
-
-```bash
-# Install dependencies
-npm install
-
-# Start the server
-node server.js
-
-# Open in browser
-# http://localhost:3000
-```
-
-## Demo Scenarios
-
-1. **Evening Rush (Default)**: See how 18 junctions become high-risk during peak hours
-2. **Simulate Accident**: Click "Simulate Incident" and click on the map to trigger dynamic redeployment
-3. **Preset Scenarios**: Use dropdown to trigger "Major Accident at Variety Square" or "VIP Movement on Airport Road"
-4. **Reduce Officers**: Lower officer count to 15 and see which high-risk junctions go unmanned
-5. **Compare Deployments**: Toggle between Baseline and Optimized to see the coverage improvement
-
-## Key Features
-
-- Interactive heatmap with Nagpur-specific data
-- Real-time risk scoring with explainable breakdowns
-- Greedy police allocation with dynamic redeployment
-- Incident simulation with animated response
-- Baseline vs Optimized deployment comparison
-- Manual override controls for operators
-- Dark command-center aesthetic
-
-## Team
-
-Built for Manthan4Yuva Hackathon 2026
-
-## License
-
-MIT
+MIT License

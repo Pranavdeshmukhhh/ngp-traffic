@@ -1,0 +1,291 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>NGP-TRAFFIC | Officer Dispatch</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root { --bg:#0f1419; --surface:#1a2332; --card:#212d3f; --border:#2a3a50; --text:#dce3ed; --muted:#7a8ba5; --accent:#4a90d9; --green:#3dbc72; --red:#c94444; --orange:#d4a72c; --font:'Inter',sans-serif; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; min-height:100dvh; }
+    .app-header { background:var(--surface); border-bottom:1px solid var(--border); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; }
+    .app-header h1 { font-size:16px; font-weight:700; color:var(--accent); }
+    .app-header .sub { font-size:10px; color:var(--muted); }
+    .badge { font-size:9px; padding:3px 8px; border-radius:10px; font-weight:700; }
+    .badge-officer { background:rgba(74,144,217,0.15); color:var(--accent); }
+    .container { max-width:480px; margin:0 auto; padding:16px; }
+    .officer-select { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
+    .officer-select label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:6px; display:block; }
+    .officer-select select { width:100%; padding:10px 12px; background:var(--card); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:14px; border-radius:8px; }
+    .status-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
+    .status-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+    .status-header .title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); }
+    .status-badge { font-size:11px; font-weight:700; padding:4px 10px; border-radius:6px; }
+    .status-available { background:rgba(61,188,114,0.15); color:var(--green); }
+    .status-dispatched { background:rgba(201,68,68,0.15); color:var(--red); animation:flashRed 1s infinite; }
+    .status-enroute { background:rgba(212,167,44,0.15); color:var(--orange); }
+    .status-onscene { background:rgba(74,144,217,0.15); color:var(--accent); }
+    @keyframes flashRed { 0%,100%{opacity:1} 50%{opacity:0.5} }
+    .dispatch-card { background:var(--card); border:2px solid var(--red); border-radius:10px; padding:14px; margin:10px 0; }
+    .dispatch-title { font-size:14px; font-weight:800; color:var(--red); margin-bottom:4px; display:flex; align-items:center; gap:6px; }
+    .dispatch-detail { font-size:12px; color:var(--muted); margin:4px 0; }
+    .dispatch-detail strong { color:var(--text); }
+    .eta-badge { font-size:20px; font-weight:800; color:var(--orange); margin:8px 0; }
+    .action-btns { display:flex; gap:8px; margin-top:12px; }
+    .action-btn { flex:1; padding:12px; border:none; font-family:var(--font); font-size:13px; font-weight:700; border-radius:8px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; }
+    .btn-accept { background:var(--green); color:white; }
+    .btn-accept:hover { background:#35a665; }
+    .btn-arrived { background:var(--accent); color:white; }
+    .btn-arrived:hover { background:#3d7ec4; }
+    .btn-resolved { background:var(--green); color:white; }
+    .btn-resolved:hover { background:#35a665; }
+    .map-section { background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:12px; }
+    .map-section .section-title { padding:12px 16px 0; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); }
+    #officerMap { width:100%; height:280px; }
+    .task-list { max-height:300px; overflow-y:auto; }
+    .task-empty { text-align:center; padding:20px; color:var(--muted); font-size:13px; }
+    .task-item { display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid var(--border); }
+    .task-item:last-child { border-bottom:none; }
+    .task-icon { font-size:18px; }
+    .task-info { flex:1; }
+    .task-name { font-size:13px; font-weight:600; }
+    .task-desc { font-size:11px; color:var(--muted); }
+    .task-time { font-size:10px; color:var(--muted); }
+    .route-steps { margin-top:8px; }
+    .route-step { display:flex; align-items:center; gap:8px; font-size:11px; padding:4px 0; color:var(--muted); }
+    .route-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); flex-shrink:0; }
+    .route-line { width:1px; height:12px; background:var(--border); margin-left:2.5px; }
+  </style>
+</head>
+<body>
+  <div class="app-header">
+    <div><h1>&#128110; Officer Dispatch</h1><div class="sub">NGP-TRAFFIC Field Terminal</div></div>
+    <span class="badge badge-officer">FIELD APP</span>
+  </div>
+
+  <div class="container">
+    <div class="officer-select">
+      <label>Select Your Identity</label>
+      <select id="officerSelect" onchange="selectOfficer(this.value)">
+        <option value="">-- Select Officer --</option>
+      </select>
+    </div>
+
+    <div class="status-card" id="statusCard" style="display:none">
+      <div class="status-header">
+        <span class="title">Current Status</span>
+        <span class="status-badge status-available" id="statusBadge">AVAILABLE</span>
+      </div>
+      <div id="dispatchArea"></div>
+    </div>
+
+    <div class="map-section">
+      <div class="section-title">&#128506; Route Map</div>
+      <div id="officerMap"></div>
+    </div>
+
+    <div class="status-card">
+      <div class="status-header">
+        <span class="title">&#128196; Assignment History</span>
+      </div>
+      <div class="task-list" id="taskList">
+        <div class="task-empty">Select an officer to view assignments</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    var socket = io();
+    var officerMap = L.map('officerMap', { center:[21.1458,79.0882], zoom:13, attributionControl:false, zoomControl:false });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(officerMap);
+    var routeLayer = L.layerGroup().addTo(officerMap);
+    var selectedOfficer = null;
+    var currentDispatch = null;
+    var taskHistory = [];
+
+    // Load officers
+    fetch('/api/officers').then(function(r){return r.json();}).then(function(officers) {
+      var sel = document.getElementById('officerSelect');
+      officers.forEach(function(o) {
+        var opt = document.createElement('option');
+        opt.value = o.id;
+        opt.textContent = o.name + ' (' + o.id + ') — ' + o.station;
+        sel.appendChild(opt);
+      });
+    });
+
+    function selectOfficer(offId) {
+      if (!offId) { document.getElementById('statusCard').style.display = 'none'; return; }
+      selectedOfficer = offId;
+      document.getElementById('statusCard').style.display = 'block';
+      // Check if officer has active dispatch
+      fetch('/api/officer-statuses').then(function(r){return r.json();}).then(function(statuses) {
+        if (statuses[offId] && statuses[offId].status !== 'available') {
+          showDispatch(statuses[offId]);
+        } else {
+          showAvailable();
+        }
+      });
+    }
+
+    function showAvailable() {
+      var badge = document.getElementById('statusBadge');
+      badge.textContent = 'AVAILABLE';
+      badge.className = 'status-badge status-available';
+      document.getElementById('dispatchArea').innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted);font-size:13px;">No active dispatch. Standing by for assignment.</div>';
+      routeLayer.clearLayers();
+    }
+
+    function showDispatch(dispatch) {
+      currentDispatch = dispatch;
+      var badge = document.getElementById('statusBadge');
+      if (dispatch.status === 'dispatched') {
+        badge.textContent = 'DISPATCHED';
+        badge.className = 'status-badge status-dispatched';
+      } else if (dispatch.status === 'en-route') {
+        badge.textContent = 'EN-ROUTE';
+        badge.className = 'status-badge status-enroute';
+      } else if (dispatch.status === 'on-scene') {
+        badge.textContent = 'ON SCENE';
+        badge.className = 'status-badge status-onscene';
+      }
+
+      var html = '<div class="dispatch-card">';
+      html += '<div class="dispatch-title">&#128680; Active Assignment</div>';
+      html += '<div class="dispatch-detail"><strong>Junction:</strong> ' + (dispatch.junctionName || dispatch.junction) + '</div>';
+      if (dispatch.eta) html += '<div class="eta-badge">ETA: ' + dispatch.eta + ' min</div>';
+      html += '<div class="action-btns">';
+
+      if (dispatch.status === 'dispatched') {
+        html += '<button class="action-btn btn-accept" onclick="acceptAssignment()">&#9989; Accept & En-Route</button>';
+      } else if (dispatch.status === 'en-route') {
+        html += '<button class="action-btn btn-arrived" onclick="markArrived()">&#128205; Mark Arrived</button>';
+      } else if (dispatch.status === 'on-scene') {
+        html += '<button class="action-btn btn-resolved" onclick="resolveIncident()">&#9989; Mark Resolved</button>';
+      }
+      html += '</div></div>';
+
+      // Show route if available
+      if (dispatch.junction) {
+        fetch('/api/route?from=' + getOfficerStation() + '&to=' + dispatch.junction).then(function(r){return r.json();}).then(function(route) {
+          if (route && route.path) { drawRoute(route); }
+        }).catch(function(){});
+      }
+
+      document.getElementById('dispatchArea').innerHTML = html;
+    }
+
+    function getOfficerStation() {
+      // Find the nearest junction to the officer's station
+      var sel = document.getElementById('officerSelect');
+      var text = sel.options[sel.selectedIndex].text;
+      // fallback to J001
+      return 'J001';
+    }
+
+    function drawRoute(route) {
+      routeLayer.clearLayers();
+      if (!route.path || route.path.length < 2) return;
+      var latlngs = route.path.filter(function(p){return p.lat && p.lng;}).map(function(p){return [p.lat,p.lng];});
+      if (latlngs.length < 2) return;
+      L.polyline(latlngs, {color:'#4a90d9', weight:4, opacity:0.8, dashArray:'8 6'}).addTo(routeLayer);
+      // Start marker
+      L.circleMarker(latlngs[0], {radius:6, fillColor:'#3dbc72', color:'white', weight:2, fillOpacity:1}).bindTooltip('Start').addTo(routeLayer);
+      // End marker
+      L.circleMarker(latlngs[latlngs.length-1], {radius:6, fillColor:'#c94444', color:'white', weight:2, fillOpacity:1}).bindTooltip('Destination').addTo(routeLayer);
+      officerMap.fitBounds(L.polyline(latlngs).getBounds(), {padding:[30,30]});
+
+      // Show route steps
+      var stepsHtml = '<div class="route-steps">';
+      route.path.forEach(function(p, i) {
+        stepsHtml += '<div class="route-step"><span class="route-dot"></span> ' + p.name + (p.road !== 'Start' ? ' via ' + p.road : '') + '</div>';
+        if (i < route.path.length - 1) stepsHtml += '<div class="route-line"></div>';
+      });
+      stepsHtml += '</div>';
+      var area = document.getElementById('dispatchArea');
+      area.innerHTML += stepsHtml;
+    }
+
+    function acceptAssignment() {
+      if (!selectedOfficer) return;
+      fetch('/api/officer/accept', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({officerId:selectedOfficer})
+      }).then(function(r){return r.json();}).then(function(res) {
+        if (res.status) showDispatch(res.status);
+        taskHistory.unshift({text:'Accepted assignment', time:new Date().toLocaleTimeString(), icon:'&#9989;'});
+        updateTaskList();
+      });
+    }
+
+    function markArrived() {
+      if (!selectedOfficer) return;
+      fetch('/api/officer/arrived', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({officerId:selectedOfficer})
+      }).then(function(r){return r.json();}).then(function(res) {
+        if (res.status) showDispatch(res.status);
+        taskHistory.unshift({text:'Arrived on scene', time:new Date().toLocaleTimeString(), icon:'&#128205;'});
+        updateTaskList();
+      });
+    }
+
+    function resolveIncident() {
+      if (!selectedOfficer || !currentDispatch) return;
+      fetch('/api/incident/resolve', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({id:currentDispatch.incident})
+      }).then(function(r){return r.json();}).then(function() {
+        showAvailable();
+        taskHistory.unshift({text:'Incident resolved', time:new Date().toLocaleTimeString(), icon:'&#9989;'});
+        updateTaskList();
+      });
+    }
+
+    function updateTaskList() {
+      var list = document.getElementById('taskList');
+      if (taskHistory.length === 0) {
+        list.innerHTML = '<div class="task-empty">No assignment history</div>';
+        return;
+      }
+      list.innerHTML = taskHistory.map(function(t) {
+        return '<div class="task-item"><span class="task-icon">' + t.icon + '</span><div class="task-info"><div class="task-name">' + t.text + '</div></div><span class="task-time">' + t.time + '</span></div>';
+      }).join('');
+    }
+
+    // Real-time events
+    socket.on('incident:new', function(data) {
+      if (!selectedOfficer) return;
+      // Check if this officer was dispatched
+      if (data.dispatch && data.dispatch.officer && data.dispatch.officer.id === selectedOfficer) {
+        var dispatch = {
+          status: 'dispatched',
+          junction: data.dispatch.junction.id,
+          junctionName: data.dispatch.junction.name,
+          incident: data.incident.id,
+          eta: data.dispatch.eta
+        };
+        showDispatch(dispatch);
+        taskHistory.unshift({text:'Dispatched to ' + data.dispatch.junction.name, time:new Date().toLocaleTimeString(), icon:'&#128680;'});
+        updateTaskList();
+        // Play alert
+        try { new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(300).join('A')).play(); } catch(e){}
+      }
+    });
+
+    socket.on('officer:status', function(data) {
+      if (data.officerId === selectedOfficer) {
+        showDispatch(data.status);
+      }
+    });
+
+    socket.on('incident:resolved', function() {
+      if (selectedOfficer) selectOfficer(selectedOfficer);
+    });
+  </script>
+</body>
+</html>
