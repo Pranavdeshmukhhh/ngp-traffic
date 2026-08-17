@@ -1,0 +1,208 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NGP-TRAFFIC | Nagpur AI Traffic Control Room</title>
+  <meta name="description" content="AI-Based Traffic Risk Heatmap and Police Deployment Decision Support for Nagpur City">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <!-- Loading Overlay -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">Initializing Control Room...</div>
+  </div>
+  <!-- HEADER -->
+  <header id="header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">&#128678;</span>
+        <div class="logo-text">
+          <h1>NGP-TRAFFIC</h1>
+          <span class="subtitle">Nagpur AI Traffic Control Room</span>
+        </div>
+      </div>
+    </div>
+    <div class="header-center">
+      <div class="status-badges">
+        <span class="badge badge-live"><span class="pulse-dot"></span> LIVE</span>
+        <span class="badge badge-mode" id="badgeMode">OPTIMIZED</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="clock" id="clock"></div>
+    </div>
+  </header>
+
+  <!-- MAIN LAYOUT -->
+  <main id="main">
+    <!-- LEFT SIDEBAR: Stats + Alerts -->
+    <aside id="sidebar">
+      <!-- Stats Cards -->
+      <div class="panel" id="statsPanel">
+        <h2 class="panel-title"><span>&#128202;</span> Dashboard</h2>
+        <div class="stats-grid">
+          <div class="stat-card stat-total">
+            <div class="stat-value" id="statTotal">50</div>
+            <div class="stat-label">Junctions</div>
+          </div>
+          <div class="stat-card stat-high">
+            <div class="stat-value" id="statHigh">--</div>
+            <div class="stat-label">High Risk</div>
+          </div>
+          <div class="stat-card stat-medium">
+            <div class="stat-value" id="statMedium">--</div>
+            <div class="stat-label">Medium Risk</div>
+          </div>
+          <div class="stat-card stat-low">
+            <div class="stat-value" id="statLow">--</div>
+            <div class="stat-label">Low Risk</div>
+          </div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card stat-officers">
+            <div class="stat-value" id="statDeployed">--</div>
+            <div class="stat-label">Deployed</div>
+          </div>
+          <div class="stat-card stat-unmanned">
+            <div class="stat-value" id="statUnmanned">--</div>
+            <div class="stat-label">Unmanned &#9888;</div>
+          </div>
+        </div>
+                <!-- Risk Distribution Chart -->
+        <div style="margin:8px 0;padding:12px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);">
+          <canvas id="riskChart" height="120"></canvas>
+        </div>
+        <!-- Coverage Comparison -->
+        <div class="coverage-compare" id="coverageCompare">
+          <h3>Coverage Comparison</h3>
+          <div class="coverage-bar-group">
+            <div class="coverage-row">
+              <span class="coverage-label">Baseline</span>
+              <div class="coverage-bar"><div class="coverage-fill baseline-fill" id="baselineFill"></div></div>
+              <span class="coverage-pct" id="baselinePct">--%</span>
+            </div>
+            <div class="coverage-row">
+              <span class="coverage-label">Optimized</span>
+              <div class="coverage-bar"><div class="coverage-fill optimized-fill" id="optimizedFill"></div></div>
+              <span class="coverage-pct" id="optimizedPct">--%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alerts Panel -->
+      <div class="panel" id="alertsPanel">
+        <h2 class="panel-title"><span>&#9888;</span> Alerts</h2>
+        <div id="alertsList" class="alerts-list">
+          <div class="alert-empty">No active alerts</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- CENTER: Map -->
+    <section id="mapSection">
+      <div id="map"></div>
+      <!-- Map Controls Overlay -->
+      <div class="map-controls">
+        <div class="map-control-group">
+          <label class="control-label">View Mode</label>
+          <div class="toggle-group">
+            <button class="toggle-btn active" id="btnOptimized" onclick="setDeploymentMode('optimized')">Optimized</button>
+            <button class="toggle-btn" id="btnBaseline" onclick="setDeploymentMode('baseline')">Baseline</button>
+          </div>
+        </div>
+        <div class="map-control-group">
+          <label class="control-label">Layers</label>
+          <div class="checkbox-group">
+            <label class="cb-label"><input type="checkbox" id="cbHeatmap" checked onchange="toggleLayer('heatmap')"> Heatmap</label>
+            <label class="cb-label"><input type="checkbox" id="cbMarkers" checked onchange="toggleLayer('markers')"> Junctions</label>
+            <label class="cb-label"><input type="checkbox" id="cbOfficers" checked onchange="toggleLayer('officers')"> Officers</label>
+            <label class="cb-label"><input type="checkbox" id="cbStations" checked onchange="toggleLayer('stations')"> Stations</label>
+          </div>
+        </div>
+      </div>
+      <!-- Incident Mode Banner -->
+      <div class="incident-banner" id="incidentBanner" style="display:none;">
+        <span>&#128680; Click on the map to place an incident</span>
+        <button onclick="cancelIncidentMode()">Cancel</button>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: Table + Controls -->
+    <aside id="rightPanel">
+      <!-- Controls -->
+      <div class="panel" id="controlsPanel">
+        <h2 class="panel-title"><span>&#127899;</span> Controls</h2>
+        <div class="control-row">
+          <label>Time of Day</label>
+          <div class="slider-group">
+            <input type="range" id="timeSlider" min="0" max="23" value="18" oninput="onTimeChange(this.value)">
+            <span class="slider-value" id="timeLabel">6:00 PM</span>
+          </div>
+        </div>
+        <div class="control-row">
+          <label>Officers Available</label>
+          <div class="number-group">
+            <button class="num-btn" onclick="changeOfficers(-1)">-</button>
+            <input type="number" id="officerCount" value="25" min="1" max="25" onchange="onOfficerChange(this.value)">
+            <button class="num-btn" onclick="changeOfficers(1)">+</button>
+          </div>
+        </div>
+        <div class="control-buttons">
+          <button class="btn btn-danger" id="btnSimulate" onclick="startIncidentMode()">&#128680; Simulate Incident</button>
+          <select id="presetSelect" onchange="loadPresetIncident(this.value)" class="preset-select">
+            <option value="">-- Preset Scenarios --</option>
+          </select>
+          <button class="btn btn-primary" onclick="reOptimize()">&#128260; Re-Optimize</button>
+          <button class="btn btn-secondary" onclick="resetAll()">&#8617; Reset All</button>
+        </div>
+      </div>
+
+      <!-- Ranked Table -->
+      <div class="panel" id="tablePanel">
+        <h2 class="panel-title"><span>&#128203;</span> Ranked Risk Locations</h2>
+        <div class="table-search">
+          <input type="text" id="tableSearch" placeholder="Search junctions..." oninput="filterTable(this.value)">
+        </div>
+        <div class="table-container">
+          <table id="riskTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Junction</th>
+                <th>Score</th>
+                <th>Risk</th>
+                <th>Officer</th>
+              </tr>
+            </thead>
+            <tbody id="riskTableBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Risk Detail Modal -->
+  <div class="modal-overlay" id="riskModal" style="display:none;" onclick="closeModal(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h2 id="modalTitle">Junction Details</h2>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

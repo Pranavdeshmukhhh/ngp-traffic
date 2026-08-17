@@ -1,0 +1,177 @@
+[
+  {
+    "id": "OFF_001",
+    "name": "Const. Patil",
+    "station": "PS01",
+    "stationName": "Sitabuldi Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_002",
+    "name": "Const. Deshmukh",
+    "station": "PS02",
+    "stationName": "Sadar Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_003",
+    "name": "Const. Jadhav",
+    "station": "PS03",
+    "stationName": "Ganeshpeth Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_004",
+    "name": "Const. Shinde",
+    "station": "PS04",
+    "stationName": "Dhantoli Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_005",
+    "name": "Const. Kulkarni",
+    "station": "PS05",
+    "stationName": "Ambazari Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_006",
+    "name": "Const. Wankhede",
+    "station": "PS06",
+    "stationName": "Pratap Nagar Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_007",
+    "name": "Const. Thakre",
+    "station": "PS07",
+    "stationName": "Hudkeshwar Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_008",
+    "name": "Const. Borkar",
+    "station": "PS08",
+    "stationName": "Wadi Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_009",
+    "name": "Const. Meshram",
+    "station": "PS09",
+    "stationName": "Kamptee Road Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_010",
+    "name": "Const. Gawande",
+    "station": "PS10",
+    "stationName": "Nandanvan Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_011",
+    "name": "HC Raut",
+    "station": "PS01",
+    "stationName": "Sitabuldi Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_012",
+    "name": "HC Bhoyar",
+    "station": "PS02",
+    "stationName": "Sadar Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_013",
+    "name": "HC Kale",
+    "station": "PS03",
+    "stationName": "Ganeshpeth Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_014",
+    "name": "HC Dongre",
+    "station": "PS04",
+    "stationName": "Dhantoli Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_015",
+    "name": "HC Nandanwar",
+    "station": "PS05",
+    "stationName": "Ambazari Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_016",
+    "name": "HC Wasnik",
+    "station": "PS06",
+    "stationName": "Pratap Nagar Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_017",
+    "name": "Const. Ghate",
+    "station": "PS07",
+    "stationName": "Hudkeshwar Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_018",
+    "name": "Const. Pande",
+    "station": "PS08",
+    "stationName": "Wadi Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_019",
+    "name": "Const. Thombre",
+    "station": "PS09",
+    "stationName": "Kamptee Road Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_020",
+    "name": "Const. Yadav",
+    "station": "PS10",
+    "stationName": "Nandanvan Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_021",
+    "name": "Const. Ramteke",
+    "station": "PS01",
+    "stationName": "Sitabuldi Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_022",
+    "name": "Const. Gedam",
+    "station": "PS02",
+    "stationName": "Sadar Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_023",
+    "name": "Const. Bawane",
+    "station": "PS03",
+    "stationName": "Ganeshpeth Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_024",
+    "name": "Const. Chahande",
+    "station": "PS04",
+    "stationName": "Dhantoli Police Station",
+    "status": "available"
+  },
+  {
+    "id": "OFF_025",
+    "name": "Const. Ikhar",
+    "station": "PS05",
+    "stationName": "Ambazari Police Station",
+    "status": "available"
+  }
+]

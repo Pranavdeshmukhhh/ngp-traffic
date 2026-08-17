@@ -1,0 +1,42 @@
+[
+  {
+    "id": "INC_P1",
+    "name": "Major Accident at Variety Square",
+    "type": "accident",
+    "lat": 21.146,
+    "lng": 79.0885,
+    "severity": "high",
+    "affectedRadius": 800,
+    "description": "Multi-vehicle collision blocking 3 lanes"
+  },
+  {
+    "id": "INC_P2",
+    "name": "VIP Movement on Airport Road",
+    "type": "vip_movement",
+    "lat": 21.1255,
+    "lng": 79.0505,
+    "severity": "medium",
+    "affectedRadius": 1200,
+    "description": "VIP convoy requiring traffic clearance"
+  },
+  {
+    "id": "INC_P3",
+    "name": "Protest near Cotton Market",
+    "type": "protest",
+    "lat": 21.1525,
+    "lng": 79.0865,
+    "severity": "high",
+    "affectedRadius": 600,
+    "description": "Large protest blocking main road"
+  },
+  {
+    "id": "INC_P4",
+    "name": "Road Flooding at Wardha Road",
+    "type": "road_block",
+    "lat": 21.1285,
+    "lng": 79.1105,
+    "severity": "medium",
+    "affectedRadius": 500,
+    "description": "Waterlogging blocking underpass"
+  }
+]

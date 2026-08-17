@@ -1,0 +1,72 @@
+[
+  {
+    "id": "PS01",
+    "name": "Sitabuldi Police Station",
+    "lat": 21.1435,
+    "lng": 79.081,
+    "zone": "Central"
+  },
+  {
+    "id": "PS02",
+    "name": "Sadar Police Station",
+    "lat": 21.1545,
+    "lng": 79.0835,
+    "zone": "Central"
+  },
+  {
+    "id": "PS03",
+    "name": "Ganeshpeth Police Station",
+    "lat": 21.1405,
+    "lng": 79.096,
+    "zone": "East"
+  },
+  {
+    "id": "PS04",
+    "name": "Dhantoli Police Station",
+    "lat": 21.138,
+    "lng": 79.072,
+    "zone": "West"
+  },
+  {
+    "id": "PS05",
+    "name": "Ambazari Police Station",
+    "lat": 21.137,
+    "lng": 79.053,
+    "zone": "West"
+  },
+  {
+    "id": "PS06",
+    "name": "Pratap Nagar Police Station",
+    "lat": 21.114,
+    "lng": 79.076,
+    "zone": "South"
+  },
+  {
+    "id": "PS07",
+    "name": "Hudkeshwar Police Station",
+    "lat": 21.111,
+    "lng": 79.106,
+    "zone": "South-East"
+  },
+  {
+    "id": "PS08",
+    "name": "Wadi Police Station",
+    "lat": 21.167,
+    "lng": 79.061,
+    "zone": "North"
+  },
+  {
+    "id": "PS09",
+    "name": "Kamptee Road Police Station",
+    "lat": 21.169,
+    "lng": 79.079,
+    "zone": "North"
+  },
+  {
+    "id": "PS10",
+    "name": "Nandanvan Police Station",
+    "lat": 21.136,
+    "lng": 79.121,
+    "zone": "East"
+  }
+]
