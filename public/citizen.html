@@ -4,76 +4,101 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>NGP-TRAFFIC | Report Incident</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root { --bg:#0f1419; --surface:#1a2332; --card:#212d3f; --border:#2a3a50; --text:#dce3ed; --muted:#7a8ba5; --accent:#4a90d9; --green:#3dbc72; --red:#c94444; --orange:#d4a72c; --font:'Inter',sans-serif; }
     * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; min-height:100dvh; }
+    body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; }
     .app-header { background:var(--surface); border-bottom:1px solid var(--border); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; }
     .app-header h1 { font-size:16px; font-weight:700; color:var(--red); }
     .app-header .sub { font-size:10px; color:var(--muted); }
-    .app-header .badge { font-size:9px; background:rgba(201,68,68,0.15); color:var(--red); padding:3px 8px; border-radius:10px; font-weight:700; }
+    .badge { font-size:9px; background:rgba(201,68,68,0.15); color:var(--red); padding:3px 8px; border-radius:10px; font-weight:700; }
     .container { max-width:480px; margin:0 auto; padding:16px; }
     .section { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
     .section-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:10px; }
-    .map-container { width:100%; height:220px; border-radius:8px; overflow:hidden; border:1px solid var(--border); position:relative; }
+    .map-container { width:100%; height:200px; border-radius:8px; overflow:hidden; border:1px solid var(--border); position:relative; }
     #citizenMap { width:100%; height:100%; }
-    .map-hint { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.7); color:white; text-align:center; font-size:11px; padding:6px; z-index:500; }
-    .loc-display { display:flex; gap:8px; margin-top:8px; font-size:11px; color:var(--muted); font-family:'JetBrains Mono',monospace; }
-    .loc-display span { background:var(--card); padding:4px 8px; border-radius:4px; flex:1; text-align:center; }
+    .map-hint { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.7); color:white; text-align:center; font-size:11px; padding:5px; z-index:500; }
+    .gps-bar { display:flex; gap:8px; margin-top:8px; align-items:center; }
+    .gps-bar .gps-status { font-size:11px; flex:1; }
+    .gps-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .gps-dot.ok { background:var(--green); }
+    .gps-dot.weak { background:var(--orange); }
+    .gps-dot.none { background:var(--red); }
+    .loc-coords { font-size:10px; color:var(--muted); font-family:'JetBrains Mono',monospace; margin-top:4px; }
     .form-group { margin-bottom:12px; }
     .form-group label { display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:5px; text-transform:uppercase; letter-spacing:0.5px; }
     .form-group select, .form-group input, .form-group textarea { width:100%; padding:10px 12px; background:var(--card); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:14px; border-radius:8px; outline:none; }
     .form-group select:focus, .form-group input:focus, .form-group textarea:focus { border-color:var(--accent); }
-    .form-group textarea { resize:none; height:70px; }
+    .form-group textarea { resize:none; height:60px; }
     .severity-group { display:flex; gap:8px; }
-    .sev-btn { flex:1; padding:10px; border:2px solid var(--border); background:var(--card); color:var(--muted); font-family:var(--font); font-size:12px; font-weight:700; border-radius:8px; cursor:pointer; text-align:center; transition:all 0.2s; }
+    .sev-btn { flex:1; padding:10px; border:2px solid var(--border); background:var(--card); color:var(--muted); font-family:var(--font); font-size:12px; font-weight:700; border-radius:8px; cursor:pointer; text-align:center; transition:all 0.15s; }
     .sev-btn.active { color:white; }
     .sev-btn.high.active { border-color:var(--red); background:rgba(201,68,68,0.15); color:var(--red); }
     .sev-btn.medium.active { border-color:var(--orange); background:rgba(212,167,44,0.15); color:var(--orange); }
     .sev-btn.low.active { border-color:var(--green); background:rgba(61,188,114,0.15); color:var(--green); }
     .photo-area { display:flex; align-items:center; gap:10px; padding:12px; background:var(--card); border:1px dashed var(--border); border-radius:8px; cursor:pointer; }
-    .photo-area .icon { font-size:24px; }
+    .photo-area .icon { font-size:20px; }
     .photo-area .label { font-size:12px; color:var(--muted); }
     .photo-area .label strong { color:var(--text); display:block; }
-    .btn-submit { width:100%; padding:14px; background:var(--red); color:white; border:none; font-family:var(--font); font-size:15px; font-weight:700; border-radius:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; }
-    .btn-submit:hover { background:#d55; }
+    .photo-preview { max-height:120px; border-radius:6px; margin-top:8px; display:none; }
+    .btn-submit { width:100%; padding:14px; background:var(--red); color:white; border:none; font-family:var(--font); font-size:15px; font-weight:700; border-radius:10px; cursor:pointer; }
     .btn-submit:disabled { opacity:0.5; cursor:not-allowed; }
-    .success-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; display:none; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:24px; }
-    .success-overlay.show { display:flex; }
-    .success-icon { font-size:60px; margin-bottom:16px; }
-    .success-title { font-size:22px; font-weight:800; color:var(--green); margin-bottom:8px; }
-    .success-desc { font-size:14px; color:var(--muted); max-width:320px; line-height:1.6; margin-bottom:6px; }
-    .success-eta { font-size:18px; font-weight:700; color:var(--accent); margin:12px 0; }
-    .success-btn { padding:12px 32px; background:var(--accent); color:white; border:none; font-family:var(--font); font-size:14px; font-weight:700; border-radius:8px; cursor:pointer; margin-top:16px; }
-    .status-bar { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:10px 12px; display:flex; align-items:center; gap:8px; margin-bottom:12px; font-size:12px; }
-    .status-dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* TRACKING SCREEN */
+    .tracking-screen { display:none; }
+    .tracking-header { text-align:center; padding:20px 0 10px; }
+    .tracking-header .check { font-size:40px; display:block; margin-bottom:8px; }
+    .tracking-header h2 { font-size:18px; font-weight:800; }
+    .tracking-header p { font-size:12px; color:var(--muted); margin-top:4px; }
+    .tracking-id { font-size:11px; color:var(--muted); text-align:center; margin-bottom:12px; font-family:'JetBrains Mono',monospace; }
+
+    .timeline { position:relative; padding-left:24px; }
+    .timeline::before { content:''; position:absolute; left:7px; top:4px; bottom:4px; width:2px; background:var(--border); }
+    .timeline-item { position:relative; padding:8px 0; }
+    .timeline-dot { position:absolute; left:-20px; top:11px; width:12px; height:12px; border-radius:50%; border:2px solid var(--border); background:var(--bg); }
+    .timeline-dot.done { background:var(--green); border-color:var(--green); }
+    .timeline-dot.active { background:var(--accent); border-color:var(--accent); }
+    .timeline-status { font-size:13px; font-weight:600; }
+    .timeline-detail { font-size:11px; color:var(--muted); margin-top:2px; }
+    .timeline-time { font-size:10px; color:var(--muted); margin-top:2px; }
+
+    .verification-card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px; }
+    .verif-row { display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:12px; }
+    .verif-label { color:var(--muted); }
+    .verif-value { font-weight:600; }
+    .verif-high { color:var(--green); }
+    .verif-medium { color:var(--orange); }
+    .verif-low { color:var(--red); }
+
+    .eta-card { text-align:center; padding:14px; background:var(--card); border:1px solid var(--border); border-radius:10px; margin-bottom:12px; }
+    .eta-card .eta-time { font-size:28px; font-weight:800; color:var(--accent); }
+    .eta-card .eta-label { font-size:11px; color:var(--muted); margin-top:2px; }
+
+    .btn-new { width:100%; padding:12px; background:var(--accent); color:white; border:none; font-family:var(--font); font-size:14px; font-weight:700; border-radius:8px; cursor:pointer; margin-top:8px; }
   </style>
 </head>
 <body>
   <div class="app-header">
     <div><h1>&#128680; Report Incident</h1><div class="sub">Nagpur City Traffic Safety</div></div>
-    <span class="badge">CITIZEN APP</span>
+    <span class="badge">CITIZEN</span>
   </div>
 
-  <div class="container">
-    <div class="status-bar">
-      <span class="status-dot"></span>
-      <span>Connected to NGP-TRAFFIC Control Room</span>
-    </div>
-
+  <!-- REPORT FORM -->
+  <div id="reportScreen" class="container">
     <div class="section">
       <div class="section-title">&#128205; Incident Location</div>
       <div class="map-container">
         <div id="citizenMap"></div>
-        <div class="map-hint">Tap the map to set incident location</div>
+        <div class="map-hint" id="mapHint">Tap map or use GPS below</div>
       </div>
-      <div class="loc-display">
-        <span id="locLat">Lat: --</span>
-        <span id="locLng">Lng: --</span>
+      <div class="gps-bar">
+        <span class="gps-dot none" id="gpsDot"></span>
+        <span class="gps-status" id="gpsStatus">Acquiring GPS...</span>
+        <button style="font-size:11px;padding:4px 10px;background:var(--card);border:1px solid var(--border);color:var(--accent);border-radius:4px;cursor:pointer;font-family:var(--font);" onclick="requestGPS()">&#128205; Use My Location</button>
       </div>
+      <div class="loc-coords" id="locCoords">--</div>
     </div>
 
     <div class="section">
@@ -81,77 +106,111 @@
       <div class="form-group">
         <label>Type of Incident</label>
         <select id="incType">
-          <option value="accident">&#128663; Road Accident</option>
-          <option value="waterlogging">&#127754; Waterlogging / Flooding</option>
-          <option value="road_block">&#128679; Road Block / Obstruction</option>
-          <option value="signal_failure">&#128678; Signal Failure</option>
-          <option value="reckless_driving">&#128664; Reckless Driving</option>
-          <option value="protest">&#128227; Protest / Rally</option>
-          <option value="other">&#128196; Other</option>
+          <option value="accident">Road Accident</option>
+          <option value="waterlogging">Waterlogging / Flooding</option>
+          <option value="road_block">Road Block / Obstruction</option>
+          <option value="signal_failure">Signal Failure</option>
+          <option value="reckless_driving">Reckless Driving</option>
+          <option value="protest">Protest / Rally</option>
+          <option value="other">Other</option>
         </select>
       </div>
       <div class="form-group">
         <label>Severity</label>
         <div class="severity-group">
-          <button class="sev-btn high active" onclick="setSeverity('high',this)">&#9888; HIGH</button>
-          <button class="sev-btn medium" onclick="setSeverity('medium',this)">&#9888; MEDIUM</button>
-          <button class="sev-btn low" onclick="setSeverity('low',this)">&#9432; LOW</button>
+          <button class="sev-btn high active" onclick="setSeverity('high',this)">HIGH</button>
+          <button class="sev-btn medium" onclick="setSeverity('medium',this)">MEDIUM</button>
+          <button class="sev-btn low" onclick="setSeverity('low',this)">LOW</button>
         </div>
       </div>
       <div class="form-group">
         <label>Description</label>
-        <textarea id="incDesc" placeholder="Describe the incident (e.g., two vehicles collided near the junction, traffic blocked...)"></textarea>
+        <textarea id="incDesc" placeholder="Describe the incident briefly..."></textarea>
       </div>
       <div class="form-group">
-        <label>Your Name (optional)</label>
-        <input type="text" id="reporterName" placeholder="Anonymous">
-      </div>
-      <div class="photo-area" onclick="document.getElementById('photoInput').click()">
-        <span class="icon">&#128247;</span>
-        <div class="label"><strong>Attach Photo</strong>Photo evidence (optional)</div>
-        <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
+        <label>Photo Evidence (optional)</label>
+        <div class="photo-area" onclick="document.getElementById('photoInput').click()">
+          <span class="icon">&#128247;</span>
+          <div class="label"><strong id="photoLabel">Attach Photo</strong>Photo evidence improves verification</div>
+          <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none" onchange="onPhotoSelected(this)">
+        </div>
+        <img id="photoPreview" class="photo-preview">
       </div>
     </div>
 
-    <button class="btn-submit" id="btnSubmit" onclick="submitIncident()" disabled>&#128680; Submit Incident Report</button>
+    <button class="btn-submit" id="btnSubmit" onclick="submitIncident()" disabled>Submit Incident Report</button>
   </div>
 
-  <div class="success-overlay" id="successOverlay">
-    <div class="success-icon">&#9989;</div>
-    <div class="success-title">Report Submitted!</div>
-    <div class="success-desc">Your incident report has been sent to the NGP-TRAFFIC Command Center.</div>
-    <div class="success-desc" id="successDispatch"></div>
-    <div class="success-eta" id="successETA"></div>
-    <button class="success-btn" onclick="resetForm()">Report Another Incident</button>
+  <!-- TRACKING SCREEN -->
+  <div id="trackingScreen" class="tracking-screen">
+    <div class="container">
+      <div class="tracking-header">
+        <span class="check">&#9989;</span>
+        <h2>Report Submitted</h2>
+        <p>Your report has been sent to the Control Room</p>
+      </div>
+      <div class="tracking-id" id="trackingId">--</div>
+
+      <div class="verification-card" id="verifCard">
+        <div class="section-title">Verification Status</div>
+        <div class="verif-row"><span class="verif-label">Location</span><span class="verif-value" id="verifLoc">--</span></div>
+        <div class="verif-row"><span class="verif-label">Photo</span><span class="verif-value" id="verifPhoto">--</span></div>
+        <div class="verif-row"><span class="verif-label">Confidence</span><span class="verif-value" id="verifConf">--</span></div>
+      </div>
+
+      <div class="eta-card" id="etaCard" style="display:none">
+        <div class="eta-time" id="etaTime">--</div>
+        <div class="eta-label">Estimated Response Time</div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Response Timeline</div>
+        <div class="timeline" id="timeline"></div>
+      </div>
+
+      <button class="btn-new" onclick="resetForm()">Report Another Incident</button>
+    </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script>
     var selectedLat = null, selectedLng = null, selectedSeverity = 'high';
-    var marker = null;
+    var gpsAccuracy = null;
+    var marker = null, photoMeta = null, trackingIncidentId = null;
     var socket = io();
 
     var citizenMap = L.map('citizenMap', { center:[21.1458,79.0882], zoom:13, attributionControl:false, zoomControl:false });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(citizenMap);
 
-    // Try geolocation
-    if (navigator.geolocation) {
+    requestGPS();
+
+    citizenMap.on('click', function(e) { setLocation(e.latlng.lat, e.latlng.lng, null); });
+
+    function requestGPS() {
+      if (!navigator.geolocation) { document.getElementById('gpsStatus').textContent = 'GPS not available'; return; }
+      document.getElementById('gpsStatus').textContent = 'Acquiring GPS...';
       navigator.geolocation.getCurrentPosition(function(pos) {
+        gpsAccuracy = pos.coords.accuracy;
+        setLocation(pos.coords.latitude, pos.coords.longitude, gpsAccuracy);
         citizenMap.setView([pos.coords.latitude, pos.coords.longitude], 15);
-        setLocation(pos.coords.latitude, pos.coords.longitude);
-      });
+        var dot = document.getElementById('gpsDot');
+        if (gpsAccuracy < 50) { dot.className = 'gps-dot ok'; document.getElementById('gpsStatus').textContent = 'GPS: High accuracy (\u00b1' + Math.round(gpsAccuracy) + 'm)'; }
+        else if (gpsAccuracy < 200) { dot.className = 'gps-dot weak'; document.getElementById('gpsStatus').textContent = 'GPS: Moderate (\u00b1' + Math.round(gpsAccuracy) + 'm)'; }
+        else { dot.className = 'gps-dot weak'; document.getElementById('gpsStatus').textContent = 'GPS: Weak (\u00b1' + Math.round(gpsAccuracy) + 'm)'; }
+      }, function() {
+        document.getElementById('gpsDot').className = 'gps-dot none';
+        document.getElementById('gpsStatus').textContent = 'GPS unavailable \u2014 tap map instead';
+      }, { enableHighAccuracy: true, timeout: 10000 });
     }
 
-    citizenMap.on('click', function(e) { setLocation(e.latlng.lat, e.latlng.lng); });
-
-    function setLocation(lat, lng) {
+    function setLocation(lat, lng, accuracy) {
       selectedLat = lat; selectedLng = lng;
-      document.getElementById('locLat').textContent = 'Lat: ' + lat.toFixed(5);
-      document.getElementById('locLng').textContent = 'Lng: ' + lng.toFixed(5);
+      document.getElementById('locCoords').textContent = lat.toFixed(5) + ', ' + lng.toFixed(5) + (accuracy ? ' (\u00b1' + Math.round(accuracy) + 'm)' : '');
+      document.getElementById('mapHint').textContent = 'Location set';
       if (marker) citizenMap.removeLayer(marker);
       marker = L.marker([lat, lng], {
-        icon: L.divIcon({ className:'', html:'<div style="width:20px;height:20px;background:#c94444;border:3px solid white;border-radius:50%;box-shadow:0 0 10px rgba(201,68,68,0.5);"></div>', iconSize:[20,20], iconAnchor:[10,10] })
+        icon: L.divIcon({ className:'', html:'<div style="width:18px;height:18px;background:#c94444;border:3px solid white;border-radius:50%;box-shadow:0 0 8px rgba(201,68,68,0.4);"></div>', iconSize:[18,18], iconAnchor:[9,9] })
       }).addTo(citizenMap);
       document.getElementById('btnSubmit').disabled = false;
     }
@@ -162,55 +221,143 @@
       btn.classList.add('active');
     }
 
+    function onPhotoSelected(input) {
+      if (input.files && input.files[0]) {
+        var file = input.files[0];
+        photoMeta = { size: file.size, type: file.type, timestamp: new Date().toISOString() };
+        document.getElementById('photoLabel').textContent = file.name + ' (' + Math.round(file.size/1024) + ' KB)';
+        var reader = new FileReader();
+        reader.onload = function(e) {
+          var preview = document.getElementById('photoPreview');
+          preview.src = e.target.result;
+          preview.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
     function submitIncident() {
       if (!selectedLat) return;
       var btn = document.getElementById('btnSubmit');
-      btn.disabled = true;
-      btn.innerHTML = '&#8987; Sending...';
+      btn.disabled = true; btn.textContent = 'Sending...';
 
       var data = {
-        name: document.getElementById('incType').selectedOptions[0].textContent.replace(/^..\s/,'') + ' — Citizen Report',
+        name: document.getElementById('incType').selectedOptions[0].textContent + ' \u2014 Citizen Report',
         type: document.getElementById('incType').value,
         severity: selectedSeverity,
-        lat: selectedLat,
-        lng: selectedLng,
+        lat: selectedLat, lng: selectedLng,
         description: document.getElementById('incDesc').value || 'Citizen report',
-        reportedBy: document.getElementById('reporterName').value || 'Anonymous Citizen'
+        reportedBy: 'Anonymous Citizen',
+        photoMeta: photoMeta
       };
 
       fetch('/api/incident', {
         method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)
       }).then(function(r){return r.json();}).then(function(result) {
-        var overlay = document.getElementById('successOverlay');
-        overlay.classList.add('show');
-        if (result.dispatch) {
-          document.getElementById('successDispatch').textContent = 'Officer ' + result.dispatch.officer.name + ' has been dispatched to the nearest junction (' + result.dispatch.junction.name + ').';
-          document.getElementById('successETA').textContent = 'Estimated Response: ' + (result.dispatch.eta || '~5') + ' minutes';
-        } else {
-          document.getElementById('successDispatch').textContent = 'The control room has been notified and will dispatch an officer shortly.';
-          document.getElementById('successETA').textContent = '';
-        }
+        trackingIncidentId = result.incident.id;
+        showTracking(result);
       }).catch(function() {
-        btn.disabled = false;
-        btn.innerHTML = '&#128680; Submit Incident Report';
+        btn.disabled = false; btn.textContent = 'Submit Incident Report';
         alert('Failed to submit. Please try again.');
       });
     }
 
-    function resetForm() {
-      document.getElementById('successOverlay').classList.remove('show');
-      selectedLat = null; selectedLng = null;
-      if (marker) { citizenMap.removeLayer(marker); marker = null; }
-      document.getElementById('incDesc').value = '';
-      document.getElementById('reporterName').value = '';
-      document.getElementById('locLat').textContent = 'Lat: --';
-      document.getElementById('locLng').textContent = 'Lng: --';
-      var btn = document.getElementById('btnSubmit');
-      btn.disabled = true;
-      btn.innerHTML = '&#128680; Submit Incident Report';
+    function showTracking(result) {
+      document.getElementById('reportScreen').style.display = 'none';
+      document.getElementById('trackingScreen').style.display = 'block';
+      document.getElementById('trackingId').textContent = 'Report ID: ' + result.incident.id;
+
+      // Verification info
+      var v = result.incident.locationVerification || {};
+      var locEl = document.getElementById('verifLoc');
+      if (v.verified) { locEl.textContent = 'Verified (' + v.distanceToRoad + 'm from ' + (v.nearestFeature ? v.nearestFeature.name : 'road') + ')'; locEl.className = 'verif-value verif-high'; }
+      else { locEl.textContent = 'Unverified (' + v.distanceToRoad + 'm from nearest road)'; locEl.className = 'verif-value verif-low'; }
+
+      var photoEl = document.getElementById('verifPhoto');
+      if (result.incident.photoMeta) { photoEl.textContent = 'Attached (' + Math.round(result.incident.photoMeta.size/1024) + ' KB)'; photoEl.className = 'verif-value verif-high'; }
+      else { photoEl.textContent = 'Not attached'; photoEl.className = 'verif-value verif-medium'; }
+
+      var confEl = document.getElementById('verifConf');
+      var vs = result.incident.verificationStatus || 'NEW';
+      if (vs === 'HIGH_CONFIDENCE') { confEl.textContent = 'HIGH'; confEl.className = 'verif-value verif-high'; }
+      else if (vs === 'LOCATION_VERIFIED') { confEl.textContent = 'MEDIUM'; confEl.className = 'verif-value verif-medium'; }
+      else { confEl.textContent = 'PENDING'; confEl.className = 'verif-value verif-low'; }
+
+      // ETA
+      if (result.dispatch && result.dispatch.eta) {
+        document.getElementById('etaCard').style.display = 'block';
+        document.getElementById('etaTime').textContent = '~' + result.dispatch.eta + ' min';
+      }
+
+      // Timeline
+      renderTimeline(result.incident.responseTimeline || [{ status: 'RECEIVED', timestamp: new Date().toISOString() }]);
+
+      // Start polling for updates
+      pollStatus();
     }
 
-    socket.on('connect', function() { console.log('Connected to control room'); });
+    function renderTimeline(timeline) {
+      var statusOrder = ['RECEIVED','VERIFIED','TEAM_ASSIGNED','EN_ROUTE','ON_SCENE','RESOLVED'];
+      var reached = timeline.map(function(t) { return t.status; });
+      var activeIdx = -1;
+      statusOrder.forEach(function(s, i) { if (reached.indexOf(s) !== -1) activeIdx = i; });
+
+      var labels = { RECEIVED:'Report Received', VERIFIED:'Location Verified', TEAM_ASSIGNED:'Response Unit Assigned', EN_ROUTE:'Response Unit En Route', ON_SCENE:'Response Unit On Scene', RESOLVED:'Incident Resolved' };
+
+      var html = '';
+      statusOrder.forEach(function(s, i) {
+        var entry = timeline.find(function(t) { return t.status === s; });
+        var dotClass = i <= activeIdx ? (i === activeIdx ? 'active' : 'done') : '';
+        html += '<div class="timeline-item"><div class="timeline-dot ' + dotClass + '"></div>';
+        html += '<div class="timeline-status">' + (labels[s] || s) + '</div>';
+        if (entry) {
+          if (entry.detail) html += '<div class="timeline-detail">' + entry.detail + '</div>';
+          html += '<div class="timeline-time">' + new Date(entry.timestamp).toLocaleTimeString() + '</div>';
+        }
+        html += '</div>';
+      });
+      document.getElementById('timeline').innerHTML = html;
+    }
+
+    function pollStatus() {
+      if (!trackingIncidentId) return;
+      setTimeout(function() {
+        fetch('/api/incident/' + trackingIncidentId + '/status')
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data.error && data.resolved) {
+              renderTimeline([{status:'RECEIVED',timestamp:new Date().toISOString()},{status:'RESOLVED',timestamp:new Date().toISOString()}]);
+              return;
+            }
+            if (data.responseTimeline) renderTimeline(data.responseTimeline);
+            if (data.eta) { document.getElementById('etaCard').style.display = 'block'; document.getElementById('etaTime').textContent = '~' + data.eta + ' min'; }
+            if (data.responseStatus !== 'RESOLVED') pollStatus();
+          }).catch(function() { pollStatus(); });
+      }, 5000);
+    }
+
+    function resetForm() {
+      document.getElementById('reportScreen').style.display = 'block';
+      document.getElementById('trackingScreen').style.display = 'none';
+      selectedLat = null; selectedLng = null; photoMeta = null; trackingIncidentId = null;
+      if (marker) { citizenMap.removeLayer(marker); marker = null; }
+      document.getElementById('incDesc').value = '';
+      document.getElementById('locCoords').textContent = '--';
+      document.getElementById('mapHint').textContent = 'Tap map or use GPS below';
+      document.getElementById('photoLabel').textContent = 'Attach Photo';
+      document.getElementById('photoPreview').style.display = 'none';
+      var btn = document.getElementById('btnSubmit');
+      btn.disabled = true; btn.textContent = 'Submit Incident Report';
+    }
+
+    // Real-time status updates
+    socket.on('incident:status-update', function(data) {
+      if (data.id === trackingIncidentId) {
+        fetch('/api/incident/' + trackingIncidentId + '/status')
+          .then(function(r) { return r.json(); })
+          .then(function(d) { if (d.responseTimeline) renderTimeline(d.responseTimeline); });
+      }
+    });
   </script>
 </body>
 </html>

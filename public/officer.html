@@ -3,95 +3,134 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>NGP-TRAFFIC | Officer Dispatch</title>
+  <title>NGP-TRAFFIC | Officer Terminal</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root { --bg:#0f1419; --surface:#1a2332; --card:#212d3f; --border:#2a3a50; --text:#dce3ed; --muted:#7a8ba5; --accent:#4a90d9; --green:#3dbc72; --red:#c94444; --orange:#d4a72c; --font:'Inter',sans-serif; }
     * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; min-height:100dvh; }
-    .app-header { background:var(--surface); border-bottom:1px solid var(--border); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; }
+    body { font-family:var(--font); background:var(--bg); color:var(--text); min-height:100vh; }
+    .app-header { background:var(--surface); border-bottom:1px solid var(--border); padding:14px 16px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; }
     .app-header h1 { font-size:16px; font-weight:700; color:var(--accent); }
     .app-header .sub { font-size:10px; color:var(--muted); }
-    .badge { font-size:9px; padding:3px 8px; border-radius:10px; font-weight:700; }
-    .badge-officer { background:rgba(74,144,217,0.15); color:var(--accent); }
+    .badge { font-size:9px; padding:3px 8px; border-radius:10px; font-weight:700; background:rgba(74,144,217,0.15); color:var(--accent); }
     .container { max-width:480px; margin:0 auto; padding:16px; }
-    .officer-select { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
-    .officer-select label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:6px; display:block; }
-    .officer-select select { width:100%; padding:10px 12px; background:var(--card); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:14px; border-radius:8px; }
-    .status-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
-    .status-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
-    .status-header .title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); }
-    .status-badge { font-size:11px; font-weight:700; padding:4px 10px; border-radius:6px; }
+
+    /* LOGIN */
+    .login-screen { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:80vh; padding:24px; }
+    .login-card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:32px 24px; width:100%; max-width:380px; }
+    .login-logo { text-align:center; margin-bottom:20px; }
+    .login-logo .icon { font-size:40px; margin-bottom:8px; display:block; }
+    .login-logo h2 { font-size:18px; font-weight:800; color:var(--text); }
+    .login-logo p { font-size:12px; color:var(--muted); margin-top:4px; }
+    .login-field { margin-bottom:14px; }
+    .login-field label { display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:5px; text-transform:uppercase; letter-spacing:0.5px; }
+    .login-field input { width:100%; padding:12px 14px; background:var(--card); border:1px solid var(--border); color:var(--text); font-family:var(--font); font-size:15px; border-radius:8px; outline:none; letter-spacing:1px; }
+    .login-field input:focus { border-color:var(--accent); }
+    .login-error { color:var(--red); font-size:12px; margin-bottom:10px; display:none; padding:8px 10px; background:rgba(201,68,68,0.1); border-radius:6px; }
+    .login-btn { width:100%; padding:14px; background:var(--accent); color:white; border:none; font-family:var(--font); font-size:15px; font-weight:700; border-radius:10px; cursor:pointer; }
+    .login-btn:hover { background:#3d7ec4; }
+    .login-btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .login-notice { font-size:10px; color:var(--muted); text-align:center; margin-top:14px; line-height:1.5; }
+
+    /* OFFICER DASHBOARD */
+    .officer-dash { display:none; }
+    .profile-bar { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .profile-info { display:flex; align-items:center; gap:10px; }
+    .profile-avatar { width:36px; height:36px; border-radius:50%; background:var(--accent); display:flex; align-items:center; justify-content:center; font-size:16px; color:white; }
+    .profile-name { font-size:14px; font-weight:700; }
+    .profile-badge { font-size:11px; color:var(--muted); }
+    .btn-logout { font-size:11px; color:var(--muted); background:var(--card); border:1px solid var(--border); padding:6px 12px; border-radius:6px; cursor:pointer; font-family:var(--font); }
+
+    .section { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
+    .section-title { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:10px; }
+
+    .status-pill { display:inline-block; font-size:12px; font-weight:700; padding:5px 12px; border-radius:6px; }
     .status-available { background:rgba(61,188,114,0.15); color:var(--green); }
-    .status-dispatched { background:rgba(201,68,68,0.15); color:var(--red); animation:flashRed 1s infinite; }
+    .status-dispatched { background:rgba(201,68,68,0.15); color:var(--red); }
     .status-enroute { background:rgba(212,167,44,0.15); color:var(--orange); }
     .status-onscene { background:rgba(74,144,217,0.15); color:var(--accent); }
-    @keyframes flashRed { 0%,100%{opacity:1} 50%{opacity:0.5} }
-    .dispatch-card { background:var(--card); border:2px solid var(--red); border-radius:10px; padding:14px; margin:10px 0; }
-    .dispatch-title { font-size:14px; font-weight:800; color:var(--red); margin-bottom:4px; display:flex; align-items:center; gap:6px; }
-    .dispatch-detail { font-size:12px; color:var(--muted); margin:4px 0; }
-    .dispatch-detail strong { color:var(--text); }
-    .eta-badge { font-size:20px; font-weight:800; color:var(--orange); margin:8px 0; }
-    .action-btns { display:flex; gap:8px; margin-top:12px; }
-    .action-btn { flex:1; padding:12px; border:none; font-family:var(--font); font-size:13px; font-weight:700; border-radius:8px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; }
+
+    .assign-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px; margin-top:10px; }
+    .assign-row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; font-size:13px; border-bottom:1px solid rgba(42,58,80,0.5); }
+    .assign-row:last-child { border-bottom:none; }
+    .assign-label { color:var(--muted); font-size:12px; }
+    .assign-value { font-weight:600; }
+    .priority-urgent { color:var(--red); font-weight:800; }
+    .priority-normal { color:var(--orange); }
+    .priority-low { color:var(--green); }
+
+    .eta-display { font-size:28px; font-weight:800; color:var(--orange); text-align:center; margin:10px 0; }
+
+    .action-btn { width:100%; padding:14px; border:none; font-family:var(--font); font-size:14px; font-weight:700; border-radius:10px; cursor:pointer; margin-top:8px; display:flex; align-items:center; justify-content:center; gap:8px; }
     .btn-accept { background:var(--green); color:white; }
-    .btn-accept:hover { background:#35a665; }
     .btn-arrived { background:var(--accent); color:white; }
-    .btn-arrived:hover { background:#3d7ec4; }
     .btn-resolved { background:var(--green); color:white; }
-    .btn-resolved:hover { background:#35a665; }
-    .map-section { background:var(--surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-bottom:12px; }
-    .map-section .section-title { padding:12px 16px 0; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--muted); }
-    #officerMap { width:100%; height:280px; }
-    .task-list { max-height:300px; overflow-y:auto; }
-    .task-empty { text-align:center; padding:20px; color:var(--muted); font-size:13px; }
-    .task-item { display:flex; align-items:center; gap:10px; padding:10px 12px; border-bottom:1px solid var(--border); }
-    .task-item:last-child { border-bottom:none; }
-    .task-icon { font-size:18px; }
-    .task-info { flex:1; }
-    .task-name { font-size:13px; font-weight:600; }
-    .task-desc { font-size:11px; color:var(--muted); }
-    .task-time { font-size:10px; color:var(--muted); }
-    .route-steps { margin-top:8px; }
-    .route-step { display:flex; align-items:center; gap:8px; font-size:11px; padding:4px 0; color:var(--muted); }
-    .route-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); flex-shrink:0; }
-    .route-line { width:1px; height:12px; background:var(--border); margin-left:2.5px; }
+
+    .map-section { border-radius:12px; overflow:hidden; border:1px solid var(--border); margin-bottom:12px; }
+    #officerMap { width:100%; height:260px; }
+
+    .empty-state { text-align:center; padding:28px 16px; color:var(--muted); }
+    .empty-state .icon { font-size:36px; margin-bottom:8px; display:block; }
+    .empty-state .title { font-size:14px; font-weight:600; color:var(--text); margin-bottom:4px; }
+    .empty-state .desc { font-size:12px; }
   </style>
 </head>
 <body>
   <div class="app-header">
-    <div><h1>&#128110; Officer Dispatch</h1><div class="sub">NGP-TRAFFIC Field Terminal</div></div>
-    <span class="badge badge-officer">FIELD APP</span>
+    <div><h1>&#128110; Officer Terminal</h1><div class="sub">NGP-TRAFFIC Field System</div></div>
+    <span class="badge">RESTRICTED ACCESS</span>
   </div>
 
-  <div class="container">
-    <div class="officer-select">
-      <label>Select Your Identity</label>
-      <select id="officerSelect" onchange="selectOfficer(this.value)">
-        <option value="">-- Select Officer --</option>
-      </select>
-    </div>
-
-    <div class="status-card" id="statusCard" style="display:none">
-      <div class="status-header">
-        <span class="title">Current Status</span>
-        <span class="status-badge status-available" id="statusBadge">AVAILABLE</span>
+  <!-- LOGIN SCREEN -->
+  <div id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <div class="login-logo">
+        <span class="icon">&#128110;</span>
+        <h2>Officer Login</h2>
+        <p>Nagpur Traffic Police — Authorized Personnel Only</p>
       </div>
-      <div id="dispatchArea"></div>
-    </div>
-
-    <div class="map-section">
-      <div class="section-title">&#128506; Route Map</div>
-      <div id="officerMap"></div>
-    </div>
-
-    <div class="status-card">
-      <div class="status-header">
-        <span class="title">&#128196; Assignment History</span>
+      <div class="login-error" id="loginError"></div>
+      <div class="login-field">
+        <label>Badge Number</label>
+        <input type="text" id="badgeInput" placeholder="NGP-XXXX" autocomplete="off" maxlength="8">
       </div>
-      <div class="task-list" id="taskList">
-        <div class="task-empty">Select an officer to view assignments</div>
+      <div class="login-field">
+        <label>PIN</label>
+        <input type="password" id="pinInput" placeholder="4-digit PIN" maxlength="4" inputmode="numeric">
+      </div>
+      <button class="login-btn" id="loginBtn" onclick="doLogin()">Sign In</button>
+      <div class="login-notice">Access restricted to authorized Nagpur Traffic Police officers.<br>Contact your station commander if you need credentials.</div>
+    </div>
+  </div>
+
+  <!-- OFFICER DASHBOARD (hidden until auth) -->
+  <div id="officerDash" class="officer-dash">
+    <div class="container">
+      <div class="profile-bar">
+        <div class="profile-info">
+          <div class="profile-avatar">&#128110;</div>
+          <div>
+            <div class="profile-name" id="offName">--</div>
+            <div class="profile-badge" id="offBadge">--</div>
+          </div>
+        </div>
+        <button class="btn-logout" onclick="doLogout()">Sign Out</button>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Current Status</div>
+        <span class="status-pill status-available" id="statusPill">AVAILABLE</span>
+        <div id="assignmentArea"></div>
+      </div>
+
+      <div class="map-section">
+        <div id="officerMap"></div>
+      </div>
+
+      <div class="section" id="incidentsSection" style="display:none">
+        <div class="section-title">Nearby Active Incidents</div>
+        <div id="nearbyIncidents"></div>
       </div>
     </div>
   </div>
@@ -99,192 +138,187 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    var authToken = null;
+    var officerData = null;
+    var officerMap = null;
+    var routeLayer = null;
     var socket = io();
-    var officerMap = L.map('officerMap', { center:[21.1458,79.0882], zoom:13, attributionControl:false, zoomControl:false });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(officerMap);
-    var routeLayer = L.layerGroup().addTo(officerMap);
-    var selectedOfficer = null;
-    var currentDispatch = null;
-    var taskHistory = [];
 
-    // Load officers
-    fetch('/api/officers').then(function(r){return r.json();}).then(function(officers) {
-      var sel = document.getElementById('officerSelect');
-      officers.forEach(function(o) {
-        var opt = document.createElement('option');
-        opt.value = o.id;
-        opt.textContent = o.name + ' (' + o.id + ') — ' + o.station;
-        sel.appendChild(opt);
+    // Check saved session
+    var saved = sessionStorage.getItem('officerToken');
+    if (saved) { authToken = saved; fetchProfile(); }
+
+    function doLogin() {
+      var badge = document.getElementById('badgeInput').value.trim().toUpperCase();
+      var pin = document.getElementById('pinInput').value.trim();
+      var errEl = document.getElementById('loginError');
+      errEl.style.display = 'none';
+
+      if (!badge || !pin) { errEl.textContent = 'Please enter badge number and PIN'; errEl.style.display = 'block'; return; }
+
+      var btn = document.getElementById('loginBtn');
+      btn.disabled = true; btn.textContent = 'Authenticating...';
+
+      fetch('/api/officer/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ badgeNumber: badge, pin: pin })
+      }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Login failed'); });
+        return r.json();
+      }).then(function(data) {
+        authToken = data.token;
+        sessionStorage.setItem('officerToken', authToken);
+        officerData = data.officer;
+        showDashboard();
+      }).catch(function(e) {
+        errEl.textContent = e.message;
+        errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = 'Sign In';
       });
-    });
+    }
 
-    function selectOfficer(offId) {
-      if (!offId) { document.getElementById('statusCard').style.display = 'none'; return; }
-      selectedOfficer = offId;
-      document.getElementById('statusCard').style.display = 'block';
-      // Check if officer has active dispatch
+    function fetchProfile() {
+      fetch('/api/officer/me', { headers: { 'Authorization': 'Bearer ' + authToken } })
+        .then(function(r) {
+          if (!r.ok) throw new Error('Session expired');
+          return r.json();
+        }).then(function(data) {
+          officerData = data.officer;
+          showDashboard();
+          renderAssignment(data);
+        }).catch(function() { doLogout(); });
+    }
+
+    function showDashboard() {
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('officerDash').style.display = 'block';
+      document.getElementById('offName').textContent = officerData.name;
+      document.getElementById('offBadge').textContent = officerData.badge + ' \u2014 ' + officerData.stationName;
+
+      if (!officerMap) {
+        officerMap = L.map('officerMap', { center:[21.1458,79.0882], zoom:13, attributionControl:false, zoomControl:false });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(officerMap);
+        routeLayer = L.layerGroup().addTo(officerMap);
+      }
+
+      // Refresh assignment every 15s
+      setInterval(function() {
+        if (authToken) {
+          fetch('/api/officer/me', { headers: { 'Authorization': 'Bearer ' + authToken } })
+            .then(function(r) { return r.json(); })
+            .then(function(data) { renderAssignment(data); });
+        }
+      }, 15000);
+      // Initial fetch
+      fetch('/api/officer/me', { headers: { 'Authorization': 'Bearer ' + authToken } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) { renderAssignment(data); });
+    }
+
+    function renderAssignment(data) {
+      var pill = document.getElementById('statusPill');
+      var area = document.getElementById('assignmentArea');
+      var status = data.status || {};
+
+      if (status.status === 'dispatched') {
+        pill.textContent = 'DISPATCHED'; pill.className = 'status-pill status-dispatched';
+      } else if (status.status === 'en-route') {
+        pill.textContent = 'EN ROUTE'; pill.className = 'status-pill status-enroute';
+      } else if (status.status === 'on-scene') {
+        pill.textContent = 'ON SCENE'; pill.className = 'status-pill status-onscene';
+      } else {
+        pill.textContent = 'AVAILABLE'; pill.className = 'status-pill status-available';
+      }
+
+      if (data.assignment) {
+        var a = data.assignment;
+        var html = '<div class="assign-card">';
+        html += '<div class="assign-row"><span class="assign-label">Destination</span><span class="assign-value">' + a.junctionName + '</span></div>';
+        html += '<div class="assign-row"><span class="assign-label">Reason</span><span class="assign-value">' + a.reason + '</span></div>';
+        html += '<div class="assign-row"><span class="assign-label">Risk Level</span><span class="assign-value" style="color:' + (a.riskLevel==='high'?'var(--red)':a.riskLevel==='medium'?'var(--orange)':'var(--green)') + '">' + a.riskLevel.toUpperCase() + ' (' + a.riskScore + ')</span></div>';
+        html += '<div class="assign-row"><span class="assign-label">Priority</span><span class="assign-value ' + (a.priority==='URGENT'?'priority-urgent':a.priority==='NORMAL'?'priority-normal':'priority-low') + '">' + a.priority + '</span></div>';
+
+        if (status.eta) html += '<div class="eta-display">ETA: ' + status.eta + ' min</div>';
+
+        if (status.status === 'dispatched') {
+          html += '<button class="action-btn btn-accept" onclick="acceptDispatch()">&#9989; Accept & En Route</button>';
+        } else if (status.status === 'en-route') {
+          html += '<button class="action-btn btn-arrived" onclick="markArrived()">&#128205; Mark Arrived</button>';
+        } else if (status.status === 'on-scene') {
+          html += '<button class="action-btn btn-resolved" onclick="markResolved()">&#9989; Mark Resolved</button>';
+        }
+        html += '</div>';
+        area.innerHTML = html;
+
+        // Show assignment on map
+        if (routeLayer) {
+          routeLayer.clearLayers();
+          L.circleMarker([a.lat, a.lng], {radius:8, fillColor:'#c94444', color:'white', weight:2, fillOpacity:0.9}).bindTooltip(a.junctionName).addTo(routeLayer);
+          officerMap.setView([a.lat, a.lng], 15);
+        }
+      } else {
+        area.innerHTML = '<div class="empty-state"><span class="icon">&#128504;</span><div class="title">No Active Assignment</div><div class="desc">Standing by for deployment. You will be notified when assigned.</div></div>';
+        if (routeLayer) routeLayer.clearLayers();
+      }
+
+      // Nearby incidents
+      var incSection = document.getElementById('incidentsSection');
+      if (data.activeIncidents && data.activeIncidents.length > 0) {
+        incSection.style.display = 'block';
+        document.getElementById('nearbyIncidents').innerHTML = data.activeIncidents.map(function(inc) {
+          return '<div class="assign-card" style="margin-bottom:6px"><div class="assign-row"><span class="assign-label">Incident</span><span class="assign-value">' + inc.name + '</span></div><div class="assign-row"><span class="assign-label">Severity</span><span class="assign-value" style="color:var(--red)">' + inc.severity.toUpperCase() + '</span></div></div>';
+        }).join('');
+      } else {
+        incSection.style.display = 'none';
+      }
+    }
+
+    function acceptDispatch() {
+      fetch('/api/officer/accept', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+authToken}, body:'{}' })
+        .then(function(r){return r.json();}).then(function(res) { fetchProfile(); });
+    }
+    function markArrived() {
+      fetch('/api/officer/arrived', { method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+authToken}, body:'{}' })
+        .then(function(r){return r.json();}).then(function(res) { fetchProfile(); });
+    }
+    function markResolved() {
+      if (!officerData) return;
       fetch('/api/officer-statuses').then(function(r){return r.json();}).then(function(statuses) {
-        if (statuses[offId] && statuses[offId].status !== 'available') {
-          showDispatch(statuses[offId]);
-        } else {
-          showAvailable();
+        var s = statuses[officerData.id];
+        if (s && s.incident) {
+          fetch('/api/incident/resolve', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:s.incident}) })
+            .then(function(){fetchProfile();});
         }
       });
     }
 
-    function showAvailable() {
-      var badge = document.getElementById('statusBadge');
-      badge.textContent = 'AVAILABLE';
-      badge.className = 'status-badge status-available';
-      document.getElementById('dispatchArea').innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted);font-size:13px;">No active dispatch. Standing by for assignment.</div>';
-      routeLayer.clearLayers();
+    function doLogout() {
+      authToken = null;
+      officerData = null;
+      sessionStorage.removeItem('officerToken');
+      document.getElementById('loginScreen').style.display = 'flex';
+      document.getElementById('officerDash').style.display = 'none';
+      document.getElementById('badgeInput').value = '';
+      document.getElementById('pinInput').value = '';
+      document.getElementById('loginBtn').disabled = false;
+      document.getElementById('loginBtn').textContent = 'Sign In';
+      document.getElementById('loginError').style.display = 'none';
     }
 
-    function showDispatch(dispatch) {
-      currentDispatch = dispatch;
-      var badge = document.getElementById('statusBadge');
-      if (dispatch.status === 'dispatched') {
-        badge.textContent = 'DISPATCHED';
-        badge.className = 'status-badge status-dispatched';
-      } else if (dispatch.status === 'en-route') {
-        badge.textContent = 'EN-ROUTE';
-        badge.className = 'status-badge status-enroute';
-      } else if (dispatch.status === 'on-scene') {
-        badge.textContent = 'ON SCENE';
-        badge.className = 'status-badge status-onscene';
-      }
-
-      var html = '<div class="dispatch-card">';
-      html += '<div class="dispatch-title">&#128680; Active Assignment</div>';
-      html += '<div class="dispatch-detail"><strong>Junction:</strong> ' + (dispatch.junctionName || dispatch.junction) + '</div>';
-      if (dispatch.eta) html += '<div class="eta-badge">ETA: ' + dispatch.eta + ' min</div>';
-      html += '<div class="action-btns">';
-
-      if (dispatch.status === 'dispatched') {
-        html += '<button class="action-btn btn-accept" onclick="acceptAssignment()">&#9989; Accept & En-Route</button>';
-      } else if (dispatch.status === 'en-route') {
-        html += '<button class="action-btn btn-arrived" onclick="markArrived()">&#128205; Mark Arrived</button>';
-      } else if (dispatch.status === 'on-scene') {
-        html += '<button class="action-btn btn-resolved" onclick="resolveIncident()">&#9989; Mark Resolved</button>';
-      }
-      html += '</div></div>';
-
-      // Show route if available
-      if (dispatch.junction) {
-        fetch('/api/route?from=' + getOfficerStation() + '&to=' + dispatch.junction).then(function(r){return r.json();}).then(function(route) {
-          if (route && route.path) { drawRoute(route); }
-        }).catch(function(){});
-      }
-
-      document.getElementById('dispatchArea').innerHTML = html;
-    }
-
-    function getOfficerStation() {
-      // Find the nearest junction to the officer's station
-      var sel = document.getElementById('officerSelect');
-      var text = sel.options[sel.selectedIndex].text;
-      // fallback to J001
-      return 'J001';
-    }
-
-    function drawRoute(route) {
-      routeLayer.clearLayers();
-      if (!route.path || route.path.length < 2) return;
-      var latlngs = route.path.filter(function(p){return p.lat && p.lng;}).map(function(p){return [p.lat,p.lng];});
-      if (latlngs.length < 2) return;
-      L.polyline(latlngs, {color:'#4a90d9', weight:4, opacity:0.8, dashArray:'8 6'}).addTo(routeLayer);
-      // Start marker
-      L.circleMarker(latlngs[0], {radius:6, fillColor:'#3dbc72', color:'white', weight:2, fillOpacity:1}).bindTooltip('Start').addTo(routeLayer);
-      // End marker
-      L.circleMarker(latlngs[latlngs.length-1], {radius:6, fillColor:'#c94444', color:'white', weight:2, fillOpacity:1}).bindTooltip('Destination').addTo(routeLayer);
-      officerMap.fitBounds(L.polyline(latlngs).getBounds(), {padding:[30,30]});
-
-      // Show route steps
-      var stepsHtml = '<div class="route-steps">';
-      route.path.forEach(function(p, i) {
-        stepsHtml += '<div class="route-step"><span class="route-dot"></span> ' + p.name + (p.road !== 'Start' ? ' via ' + p.road : '') + '</div>';
-        if (i < route.path.length - 1) stepsHtml += '<div class="route-line"></div>';
-      });
-      stepsHtml += '</div>';
-      var area = document.getElementById('dispatchArea');
-      area.innerHTML += stepsHtml;
-    }
-
-    function acceptAssignment() {
-      if (!selectedOfficer) return;
-      fetch('/api/officer/accept', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({officerId:selectedOfficer})
-      }).then(function(r){return r.json();}).then(function(res) {
-        if (res.status) showDispatch(res.status);
-        taskHistory.unshift({text:'Accepted assignment', time:new Date().toLocaleTimeString(), icon:'&#9989;'});
-        updateTaskList();
-      });
-    }
-
-    function markArrived() {
-      if (!selectedOfficer) return;
-      fetch('/api/officer/arrived', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({officerId:selectedOfficer})
-      }).then(function(r){return r.json();}).then(function(res) {
-        if (res.status) showDispatch(res.status);
-        taskHistory.unshift({text:'Arrived on scene', time:new Date().toLocaleTimeString(), icon:'&#128205;'});
-        updateTaskList();
-      });
-    }
-
-    function resolveIncident() {
-      if (!selectedOfficer || !currentDispatch) return;
-      fetch('/api/incident/resolve', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({id:currentDispatch.incident})
-      }).then(function(r){return r.json();}).then(function() {
-        showAvailable();
-        taskHistory.unshift({text:'Incident resolved', time:new Date().toLocaleTimeString(), icon:'&#9989;'});
-        updateTaskList();
-      });
-    }
-
-    function updateTaskList() {
-      var list = document.getElementById('taskList');
-      if (taskHistory.length === 0) {
-        list.innerHTML = '<div class="task-empty">No assignment history</div>';
-        return;
-      }
-      list.innerHTML = taskHistory.map(function(t) {
-        return '<div class="task-item"><span class="task-icon">' + t.icon + '</span><div class="task-info"><div class="task-name">' + t.text + '</div></div><span class="task-time">' + t.time + '</span></div>';
-      }).join('');
-    }
-
-    // Real-time events
+    // Real-time dispatch notifications
     socket.on('incident:new', function(data) {
-      if (!selectedOfficer) return;
-      // Check if this officer was dispatched
-      if (data.dispatch && data.dispatch.officer && data.dispatch.officer.id === selectedOfficer) {
-        var dispatch = {
-          status: 'dispatched',
-          junction: data.dispatch.junction.id,
-          junctionName: data.dispatch.junction.name,
-          incident: data.incident.id,
-          eta: data.dispatch.eta
-        };
-        showDispatch(dispatch);
-        taskHistory.unshift({text:'Dispatched to ' + data.dispatch.junction.name, time:new Date().toLocaleTimeString(), icon:'&#128680;'});
-        updateTaskList();
-        // Play alert
-        try { new Audio('data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YU'+Array(300).join('A')).play(); } catch(e){}
+      if (officerData && data.dispatch && data.dispatch.officer && data.dispatch.officer.id === officerData.id) {
+        fetchProfile();
       }
     });
-
     socket.on('officer:status', function(data) {
-      if (data.officerId === selectedOfficer) {
-        showDispatch(data.status);
-      }
+      if (officerData && data.officerId === officerData.id) fetchProfile();
     });
+    socket.on('incident:resolved', function() { if (authToken) fetchProfile(); });
 
-    socket.on('incident:resolved', function() {
-      if (selectedOfficer) selectOfficer(selectedOfficer);
+    // Enter key support
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && document.getElementById('loginScreen').style.display !== 'none') doLogin();
     });
   </script>
 </body>
