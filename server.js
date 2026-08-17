@@ -113,7 +113,9 @@ app.get('/api/risk-scores', function(req, res) {
 app.get('/api/allocation', function(req, res) {
   var hour = parseInt(req.query.hour) || 14;
   var numOfficers = parseInt(req.query.officers) || 25;
-  var scored = junctions.map(function(j){ return Object.assign({}, j, { risk: calcRiskScore(j, hour, activeIncidents) }); });
+  var queryIncidents = req.query.incidents ? JSON.parse(decodeURIComponent(req.query.incidents)) : null;
+  var effectiveIncidents = queryIncidents ? queryIncidents : activeIncidents;
+  var scored = junctions.map(function(j){ return Object.assign({}, j, { risk: calcRiskScore(j, hour, effectiveIncidents) }); });
   scored.sort(function(a,b){ return b.risk.total - a.risk.total; });
   var optimized = allocateOfficers(scored, numOfficers, manualOverrides);
   var baseline = getBaselineDeployment();
@@ -132,7 +134,7 @@ app.get('/api/allocation', function(req, res) {
     optimizedCoverage: Math.round(optHighMed.length / Math.max(highMed.length,1) * 100),
     avgRiskScore: Math.round(scored.reduce(function(s,j){ return s + j.risk.total; }, 0) / scored.length)
   };
-  res.json({ junctions: scored, optimizedDeployment: optimized, baselineDeployment: baseline, unmannedHighRisk: unmanned, stats: stats, activeIncidents: activeIncidents });
+  res.json({ junctions: scored, optimizedDeployment: optimized, baselineDeployment: baseline, unmannedHighRisk: unmanned, stats: stats, activeIncidents: effectiveIncidents });
 });
 
 app.get('/api/baseline', function(req, res) { res.json(getBaselineDeployment()); });

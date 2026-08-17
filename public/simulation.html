@@ -1,0 +1,116 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NGP-TRAFFIC | Simulation Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header id="header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">&#128736;</span>
+        <div class="logo-text">
+          <h1>SIMULATION LAB</h1>
+          <span class="subtitle">NGP-TRAFFIC &mdash; Demo &amp; Testing Environment</span>
+        </div>
+      </div>
+    </div>
+    <div class="header-center">
+      <span class="badge badge-sim"><span class="pulse-dot pulse-orange"></span> SIMULATION MODE</span>
+    </div>
+    <div class="header-right">
+      <a href="/" class="btn btn-outline btn-sm">&larr; Back to Control Room</a>
+    </div>
+  </header>
+
+  <main id="main" style="grid-template-columns: 320px 1fr;">
+    <aside id="sidebar" style="overflow-y:auto;">
+      <div class="panel">
+        <h2 class="panel-title"><span>&#128680;</span> Incident Simulation</h2>
+        <p class="panel-desc">Test how the AI redeployment engine responds to incidents. Click on the map to place an incident, or use a preset scenario.</p>
+
+        <div class="control-row" style="margin-top:14px;">
+          <label>Time of Day (Simulation)</label>
+          <div class="slider-group">
+            <input type="range" id="simTimeSlider" min="0" max="23" value="18" oninput="onSimTimeChange(this.value)">
+            <span class="slider-value" id="simTimeLabel">6:00 PM</span>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <label>Officers Available</label>
+          <div class="number-group">
+            <button class="num-btn" onclick="simChangeOfficers(-1)">-</button>
+            <input type="number" id="simOfficerCount" value="25" min="1" max="25">
+            <button class="num-btn" onclick="simChangeOfficers(1)">+</button>
+          </div>
+        </div>
+
+        <div class="control-buttons">
+          <button class="btn btn-danger" id="btnSimIncident" onclick="startSimIncidentMode()">&#128680; Place Incident on Map</button>
+          <div class="sim-incident-form" id="simIncidentForm" style="display:none;">
+            <label>Incident Type</label>
+            <select id="simIncType">
+              <option value="accident">Accident</option>
+              <option value="protest">Protest</option>
+              <option value="road_block">Road Block</option>
+              <option value="vip_movement">VIP Movement</option>
+            </select>
+            <label>Severity</label>
+            <select id="simIncSeverity">
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+            </select>
+            <label>Description</label>
+            <input type="text" id="simIncDesc" value="Simulated incident" placeholder="Description...">
+          </div>
+
+          <label style="margin-top:10px;font-size:12px;font-weight:600;color:var(--text-secondary);">Preset Scenarios</label>
+          <select id="presetSelect" onchange="loadSimPreset(this.value)" class="preset-select">
+            <option value="">-- Select a scenario --</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2 class="panel-title"><span>&#128202;</span> Simulation Results</h2>
+        <div id="simStats" class="sim-stats">
+          <div class="sim-stat"><span class="sim-stat-label">High Risk Junctions</span><span class="sim-stat-value" id="simHigh">--</span></div>
+          <div class="sim-stat"><span class="sim-stat-label">Officers Deployed</span><span class="sim-stat-value" id="simDeployed">--</span></div>
+          <div class="sim-stat"><span class="sim-stat-label">Unmanned Critical</span><span class="sim-stat-value" id="simUnmanned">--</span></div>
+          <div class="sim-stat"><span class="sim-stat-label">Active Incidents</span><span class="sim-stat-value" id="simIncidents">0</span></div>
+          <div class="sim-stat"><span class="sim-stat-label">Avg Risk Score</span><span class="sim-stat-value" id="simAvgRisk">--</span></div>
+        </div>
+        <div class="control-buttons" style="margin-top:12px;">
+          <button class="btn btn-secondary" onclick="clearSimIncidents()">Clear All Incidents</button>
+          <button class="btn btn-secondary" onclick="resetSim()">Reset Simulation</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2 class="panel-title"><span>&#128276;</span> Redeployment Log</h2>
+        <div id="simRedeployLog" class="notifications-list" style="max-height:300px;overflow-y:auto;">
+          <div class="notification-empty">No redeployments yet</div>
+        </div>
+      </div>
+    </aside>
+
+    <section id="mapSection">
+      <div id="simMap" style="width:100%;height:100%;"></div>
+      <div class="incident-banner" id="simIncidentBanner" style="display:none;">
+        <span>&#128680; Click on the map to place the incident</span>
+        <button onclick="cancelSimIncidentMode()">Cancel</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="js/simulation.js"></script>
+</body>
+</html>
