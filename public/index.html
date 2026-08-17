@@ -131,6 +131,7 @@
         </div>
         <div class="control-buttons">
           <button class="btn btn-primary" onclick="reOptimize()">&#128260; Re-Optimize</button>
+            <button class="btn btn-accent" onclick="toggleRoutePlanner()">&#128506;&#65039; Route Planner</button>
           <a href="/simulation.html" class="btn btn-outline" target="_blank">&#128736; Open Simulation Lab</a>
           <button class="btn btn-outline" onclick="showMLMetrics()">&#129302; AI Model Metrics</button>
         </div>
@@ -162,6 +163,30 @@
 
   <!-- Redeployment Notification Toast -->
   <div class="toast-container" id="toastContainer"></div>
+
+  
+  <!-- Route Planner Overlay -->
+  <div id="routePlannerOverlay" class="route-planner-overlay">
+    <div class="route-planner-header">
+      <h3>&#128506;&#65039; Route Planner (OSRM)</h3>
+      <button class="btn-icon" onclick="toggleRoutePlanner()">&#10005;</button>
+    </div>
+    <div class="route-planner-body">
+      <p class="route-desc">Select points on the map or use presets.</p>
+      <div class="route-inputs">
+        <div class="route-input-group">
+          <label>Start:</label>
+          <input type="text" id="routeStart" placeholder="Click map or type landmark..." autocomplete="off">
+        </div>
+        <div class="route-input-group">
+          <label>Destination:</label>
+          <input type="text" id="routeEnd" placeholder="Click map or type landmark..." autocomplete="off">
+        </div>
+      </div>
+      <button class="btn btn-primary" style="width:100%; margin-top:10px;" onclick="calculateRoute()">Find Route</button>
+      <div id="routeResult" class="route-result-container"></div>
+    </div>
+  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
