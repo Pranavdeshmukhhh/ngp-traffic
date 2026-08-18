@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
@@ -171,8 +171,9 @@ function allocateOfficers(scored, numOfficers, overrides) {
     if (off) { deployment[jid] = off; usedOfficerIds[offId] = true; }
   });
   var remaining = available.filter(function(o) { return !usedOfficerIds[o.id]; });
-  scored.forEach(function(j) {
-    if (deployment[j.id] || remaining.length === 0) return;
+      scored.forEach(function(j) {
+      if (j.risk.level === 'low') return; // Only deploy to high/medium risk junctions
+      if (deployment[j.id] || remaining.length === 0) return;
     var nearest = null, minD = Infinity;
     remaining.forEach(function(o) {
       var st = stations.find(function(s) { return s.id === o.station; });
