@@ -242,7 +242,7 @@ function updateTable(data) {
   tbody.innerHTML = filtered.map(function(j, i) {
     var color = j.risk.level === 'high' ? 'var(--risk-high)' : j.risk.level === 'medium' ? 'var(--risk-medium)' : 'var(--risk-low)';
     var off = deployment[j.id];
-    return '<tr onclick="showJunctionDetail(\''+j.id+'\')" style="cursor:pointer"><td>'+(i+1)+'</td><td>'+j.name+'</td><td style="color:'+color+';font-weight:700">'+j.risk.total+'</td><td><span class="risk-badge risk-'+j.risk.level+'">'+j.risk.level.toUpperCase()+'</span></td><td>'+(off?off.name:'—')+'</td></tr>';
+    return '<tr onclick="showJunctionDetail(\''+j.id+'\')" style="cursor:pointer"><td>'+(i+1)+'</td><td>'+j.name+'</td><td style="color:'+color+';font-weight:700">'+j.risk.total+'</td><td><span class="risk-badge risk-'+j.risk.level+'">'+j.risk.level.toUpperCase()+'</span></td><td>'+(off?off.name:'â€”')+'</td></tr>';
   }).join('');
 }
 
@@ -304,7 +304,7 @@ function updateNotifications(data) {
   // Show historical label if not live
   var prefix = '';
   if (!isLiveMode()) {
-    prefix = '<div style="padding:6px 10px;background:rgba(212,167,44,0.1);border:1px solid rgba(212,167,44,0.2);border-radius:6px;font-size:11px;color:#d4a72c;margin-bottom:6px;text-align:center;">&#128337; Historical View — Live notifications paused</div>';
+    prefix = '<div style="padding:6px 10px;background:rgba(212,167,44,0.1);border:1px solid rgba(212,167,44,0.2);border-radius:6px;font-size:11px;color:#d4a72c;margin-bottom:6px;text-align:center;">&#128337; Historical View â€” Live notifications paused</div>';
   }
   list.innerHTML = prefix + items.slice(0, 12).map(function(n) {
     return '<div class="notif-item' + (n.urgent ? ' urgent' : '') + '"><span class="notif-icon">' + n.icon + '</span><div class="notif-content"><div class="notif-title">' + n.title + '</div><div class="notif-desc">' + n.desc + '</div></div></div>';
@@ -637,13 +637,13 @@ function resolveLocation(input) {
 
 function haversineDist(lat1, lon1, lat2, lon2) {
   const R = 6371e3; // metres
-  const Ï†1 = lat1 * Math.PI/180;
-  const Ï†2 = lat2 * Math.PI/180;
-  const Î”Ï† = (lat2-lat1) * Math.PI/180;
-  const Î”Î» = (lon2-lon1) * Math.PI/180;
-  const a = Math.sin(Î”Ï†/2) * Math.sin(Î”Ï†/2) +
-            Math.cos(Ï†1) * Math.cos(Ï†2) *
-            Math.sin(Î”Î»/2) * Math.sin(Î”Î»/2);
+  const p1 = lat1 * Math.PI/180;
+  const p2 = lat2 * Math.PI/180;
+  const dp = (lat2-lat1) * Math.PI/180;
+  const dl = (lon2-lon1) * Math.PI/180;
+  const a = Math.sin(dp/2) * Math.sin(dp/2) +
+            Math.cos(p1) * Math.cos(p2) *
+            Math.sin(dl/2) * Math.sin(dl/2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   return R * c;
 }
