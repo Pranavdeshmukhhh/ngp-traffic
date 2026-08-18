@@ -3,3 +3,12 @@
 *.log
 .DS_Store
 Thumbs.db
+test_*.json
+*.tmp
+fix*.js
+update*.js
+update*.py
+restore*.js
+gen_*.js
+add_traffic.js
+test_browser.js

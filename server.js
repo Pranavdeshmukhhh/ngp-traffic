@@ -15,7 +15,11 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '5mb' })); // larger limit for photo uploads
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: function (res, filePath) {
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+}));
 
 // Load data
 const junctions = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'nagpur-junctions.json'), 'utf8'));
@@ -81,26 +85,20 @@ function haversine(lat1, lon1, lat2, lon2) {
 
 // === Location Verification ===
 function verifyLocation(lat, lng) {
-  // Check proximity to any road segment point or junction
   var minDist = Infinity;
   var nearestFeature = null;
-
-  // Check junctions
   junctions.forEach(function(j) {
     var d = haversine(lat, lng, j.lat, j.lng);
     if (d < minDist) { minDist = d; nearestFeature = { type: 'junction', name: j.name, distance: d }; }
   });
-
-  // Check road segment points
   roadSegments.forEach(function(seg) {
     seg.points.forEach(function(pt) {
       var d = haversine(lat, lng, pt[0], pt[1]);
       if (d < minDist) { minDist = d; nearestFeature = { type: 'road', name: seg.name, distance: d }; }
     });
   });
-
   return {
-    verified: minDist < 300, // within 300m of known road/junction
+    verified: minDist < 300,
     nearestFeature: nearestFeature,
     distanceToRoad: Math.round(minDist),
     confidence: minDist < 100 ? 'high' : minDist < 300 ? 'medium' : 'low'
@@ -120,7 +118,7 @@ function calcRiskScore(junction, hour, incidents) {
       incidentWeight = Math.max(incidentWeight, inc.severity === 'high' ? 1 : 0.7);
     }
   });
-  var features = extractFeatures(junction, hour, dayOfWeek, rainMM, incidentWeight);
+  var features = extractFeatures(junction, hour, dayOfWeek, rainMM, incidentWeight, 0);
   var mlScore = mlModel.predict(features);
 
   const maxAccidents = 30;
@@ -160,69 +158,89 @@ function calcRiskScore(junction, hour, incidents) {
   };
 }
 
-// === Officer Allocation ===
+// === Officer Allocation (AI-Optimized) ===
+// Deploys officers to HIGH risk junctions first (more officers), then MEDIUM, then LOW
+// Officers are assigned based on proximity to their home station
 function allocateOfficers(scored, numOfficers, overrides) {
   var deployment = {};
-  scored.forEach(j => deployment[j.id] = []);
-  var available = officers.slice(0, numOfficers);
-  var jIdx = 0;
-  available.forEach(o => {
-    if (jIdx >= scored.length) jIdx = 0;
-    deployment[scored[jIdx].id].push(o);
-    jIdx++;
-  });
-  return deployment;
-}
-function allocateOfficers_OLD(scored, numOfficers, overrides) {
-  var deployment = {};
+  scored.forEach(function(j) { deployment[j.id] = []; });
+
   var available = officers.slice(0, numOfficers);
   var usedOfficerIds = {};
+
+  // Apply manual overrides first
   Object.keys(overrides).forEach(function(jid) {
     var offId = overrides[jid];
     var off = available.find(function(o) { return o.id === offId; });
-    if (off) { deployment[jid] = off; usedOfficerIds[offId] = true; }
-  });
-  var remaining = available.filter(function(o) { return !usedOfficerIds[o.id]; });
-      scored.forEach(function(j) {
-      if (j.risk.level === 'low') return; // Only deploy to high/medium risk junctions
-      if (deployment[j.id] || remaining.length === 0) return;
-    var nearest = null, minD = Infinity;
-    remaining.forEach(function(o) {
-      var st = stations.find(function(s) { return s.id === o.station; });
-      if (!st) return;
-      var d = haversine(j.lat, j.lng, st.lat, st.lng);
-      if (d < minD) { minD = d; nearest = o; }
-    });
-    if (nearest) {
-      deployment[j.id] = nearest;
-      remaining = remaining.filter(function(o) { return o.id !== nearest.id; });
+    if (off) {
+      deployment[jid] = deployment[jid] || [];
+      deployment[jid].push(off);
+      usedOfficerIds[offId] = true;
     }
   });
+
+  var remaining = available.filter(function(o) { return !usedOfficerIds[o.id]; });
+
+  // Separate junctions by risk level
+  var highRisk = scored.filter(function(j) { return j.risk.level === 'high'; });
+  var medRisk = scored.filter(function(j) { return j.risk.level === 'medium'; });
+  var lowRisk = scored.filter(function(j) { return j.risk.level === 'low'; });
+
+  // Allocate officers: high risk gets ~40% of officers, medium ~35%, low ~25%
+  var highCount = Math.ceil(remaining.length * 0.40);
+  var medCount = Math.ceil(remaining.length * 0.35);
+
+  // Distribute to high-risk junctions
+  var highOfficers = remaining.splice(0, highCount);
+  if (highRisk.length > 0) {
+    var perHigh = Math.max(1, Math.ceil(highOfficers.length / highRisk.length));
+    var hIdx = 0;
+    highOfficers.forEach(function(o) {
+      if (hIdx >= highRisk.length) hIdx = 0;
+      deployment[highRisk[hIdx].id].push(o);
+      hIdx++;
+    });
+  } else {
+    // No high risk junctions, give these officers to medium
+    remaining = highOfficers.concat(remaining);
+    medCount = Math.ceil(remaining.length * 0.60);
+  }
+
+  // Distribute to medium-risk junctions
+  var medOfficers = remaining.splice(0, medCount);
+  if (medRisk.length > 0) {
+    var mIdx = 0;
+    medOfficers.forEach(function(o) {
+      if (mIdx >= medRisk.length) mIdx = 0;
+      deployment[medRisk[mIdx].id].push(o);
+      mIdx++;
+    });
+  } else {
+    remaining = medOfficers.concat(remaining);
+  }
+
+  // Distribute remaining to low-risk junctions
+  if (lowRisk.length > 0 && remaining.length > 0) {
+    var lIdx = 0;
+    remaining.forEach(function(o) {
+      if (lIdx >= lowRisk.length) lIdx = 0;
+      deployment[lowRisk[lIdx].id].push(o);
+      lIdx++;
+    });
+  }
+
   return deployment;
 }
 
+// === Baseline Deployment (round-robin, no optimization) ===
 function getBaselineDeployment() {
   var baseline = {};
-  junctions.forEach(j => baseline[j.id] = []);
+  junctions.forEach(function(j) { baseline[j.id] = []; });
   var jIdx = 0;
-  officers.forEach(o => {
+  officers.forEach(function(o) {
     if (jIdx >= junctions.length) jIdx = 0;
     baseline[junctions[jIdx].id].push(o);
     jIdx++;
-  });
-  return baseline;
-}
-function getBaselineDeployment_OLD() {
-  var baseline = {};
-  officers.forEach(function(o) {
-    var st = stations.find(function(s) { return s.id === o.station; });
-    if (!st) return;
-    var nearest = null, minD = Infinity;
-    junctions.forEach(function(j) {
-      var d = haversine(j.lat, j.lng, st.lat, st.lng);
-      if (d < minD && !baseline[j.id]) { minD = d; nearest = j; }
-    });
-    if (nearest) baseline[nearest.id] = o;
   });
   return baseline;
 }
@@ -264,11 +282,16 @@ app.get('/api/officer/me', requireOfficerAuth, function(req, res) {
   var hour = new Date().getHours();
   var scored = junctions.map(function(j) { return Object.assign({}, j, { risk: calcRiskScore(j, hour, activeIncidents) }); });
   scored.sort(function(a, b) { return b.risk.total - a.risk.total; });
-  var deployment = allocateOfficers(scored, 25, manualOverrides);
+  var deployment = allocateOfficers(scored, officers.length, manualOverrides);
   var assignedJunction = null;
   Object.keys(deployment).forEach(function(jid) {
-    if (deployment[jid].id === req.officerId) {
-      assignedJunction = scored.find(function(j) { return j.id === jid; });
+    var arr = deployment[jid];
+    if (Array.isArray(arr)) {
+      arr.forEach(function(o) {
+        if (o.id === req.officerId) {
+          assignedJunction = scored.find(function(j) { return j.id === jid; });
+        }
+      });
     }
   });
 
@@ -280,7 +303,7 @@ app.get('/api/officer/me', requireOfficerAuth, function(req, res) {
       junctionName: assignedJunction.name,
       riskScore: assignedJunction.risk.total,
       riskLevel: assignedJunction.risk.level,
-      reason: 'AI-optimized deployment Ã¢â‚¬â€ ' + assignedJunction.risk.level.toUpperCase() + ' risk area',
+      reason: 'AI-optimized deployment - ' + assignedJunction.risk.level.toUpperCase() + ' risk area',
       priority: assignedJunction.risk.level === 'high' ? 'URGENT' : assignedJunction.risk.level === 'medium' ? 'NORMAL' : 'LOW',
       lat: assignedJunction.lat, lng: assignedJunction.lng
     } : null,
@@ -316,6 +339,22 @@ app.get('/api/ml/metrics', function(req, res) {
 });
 
 // === ALLOCATION ===
+app.post('/api/randomize-traffic', function(req, res) {
+  var hour = parseInt(req.body.hour) || new Date().getHours();
+  var timeMod = 1.0;
+  if (hour >= 8 && hour <= 11) timeMod = 1.5;
+  else if (hour >= 17 && hour <= 20) timeMod = 1.6;
+  else if (hour >= 1 && hour <= 5) timeMod = 0.2;
+  junctions.forEach(function(j) {
+    var baseVal = ((j.name.length * 13) % 100) / 100.0;
+    var randomJitter = Math.random() * 0.4 - 0.2;
+    var traffic = (baseVal + randomJitter) * timeMod;
+    var maxAcc = Math.max.apply(null, j.trafficByHour);
+    j.trafficByHour[hour] = Math.round(maxAcc * Math.max(0.1, Math.min(1.0, traffic)));
+  });
+  res.json({success:true});
+});
+
 app.get('/api/allocation', function(req, res) {
   var hour = parseInt(req.query.hour) || 14;
   var numOfficers = parseInt(req.query.officers) || 25;
@@ -325,19 +364,33 @@ app.get('/api/allocation', function(req, res) {
   scored.sort(function(a, b) { return b.risk.total - a.risk.total; });
   var optimized = allocateOfficers(scored, numOfficers, manualOverrides);
   var baseline = getBaselineDeployment();
-  var unmanned = scored.filter(function(j) { return !optimized[j.id] && j.risk.level === 'high'; });
+
+  // Unmanned = high-risk junctions with NO officers
+  var unmanned = scored.filter(function(j) { return j.risk.level === 'high' && (!optimized[j.id] || optimized[j.id].length === 0); });
+
   var highMed = scored.filter(function(j) { return j.risk.level !== 'low'; });
-  var optHighMed = Object.keys(optimized).filter(function(jid) { var j = scored.find(function(s) { return s.id === jid; }); return j && j.risk.level !== 'low'; });
+
+  // Count how many high/med junctions have at least one officer
+  var optHighMedCovered = Object.keys(optimized).filter(function(jid) {
+    var j = scored.find(function(s) { return s.id === jid; });
+    return j && j.risk.level !== 'low' && optimized[jid].length > 0;
+  });
+
+  var baseHighMedCovered = Object.keys(baseline).filter(function(jid) {
+    var j = scored.find(function(s) { return s.id === jid; });
+    return j && j.risk.level !== 'low' && baseline[jid].length > 0;
+  });
+
   var stats = {
     totalJunctions: scored.length,
     highRisk: scored.filter(function(j) { return j.risk.level === 'high'; }).length,
     mediumRisk: scored.filter(function(j) { return j.risk.level === 'medium'; }).length,
     lowRisk: scored.filter(function(j) { return j.risk.level === 'low'; }).length,
-    officersDeployed: Object.keys(optimized).reduce((sum, jid) => sum + optimized[jid].length, 0),
+    officersDeployed: Object.keys(optimized).reduce(function(sum, jid) { return sum + optimized[jid].length; }, 0),
     officersTotal: numOfficers,
     unmannedHighRisk: unmanned.length,
-    baselineCoverage: Math.round(Object.keys(baseline).filter(jid => { var j = scored.find(s => s.id === jid); return j && j.risk.level !== 'low' && baseline[jid].length > 0; }).length / Math.max(highMed.length, 1) * 100),
-    optimizedCoverage: Math.round(optHighMed.length / Math.max(highMed.length, 1) * 100),
+    baselineCoverage: Math.min(100, Math.round(baseHighMedCovered.length / Math.max(highMed.length, 1) * 100)),
+    optimizedCoverage: Math.min(100, Math.round(optHighMedCovered.length / Math.max(highMed.length, 1) * 100)),
     avgRiskScore: Math.round(scored.reduce(function(s, j) { return s + j.risk.total; }, 0) / scored.length)
   };
   res.json({ junctions: scored, optimizedDeployment: optimized, baselineDeployment: baseline, unmannedHighRisk: unmanned, stats: stats, activeIncidents: effectiveIncidents });
@@ -372,7 +425,6 @@ app.post('/api/incident', function(req, res) {
   var b = req.body;
   var locVerification = verifyLocation(b.lat, b.lng);
 
-  // Determine verification status
   var verificationStatus = 'NEW';
   var hasPhoto = !!(b.photoMeta && b.photoMeta.size > 0);
   if (locVerification.verified && hasPhoto) verificationStatus = 'HIGH_CONFIDENCE';
@@ -390,11 +442,9 @@ app.post('/api/incident', function(req, res) {
     reportedBy: b.reportedBy || 'Control Room',
     timestamp: new Date().toISOString(),
     resolved: false,
-    // Verification pipeline
     verificationStatus: verificationStatus,
     locationVerification: locVerification,
     photoMeta: hasPhoto ? { size: b.photoMeta.size, type: b.photoMeta.type, timestamp: b.photoMeta.timestamp || new Date().toISOString() } : null,
-    // Response tracking
     responseStatus: 'RECEIVED',
     responseTimeline: [{ status: 'RECEIVED', timestamp: new Date().toISOString() }]
   };
@@ -402,20 +452,19 @@ app.post('/api/incident', function(req, res) {
 
   // Recalculate deployment
   var hour = parseInt(req.query.hour) || new Date().getHours();
-  var numOfficers = parseInt(req.query.officers) || 25;
+  var numOfficers = parseInt(req.query.officers) || officers.length;
   var scored = junctions.map(function(j) { return Object.assign({}, j, { risk: calcRiskScore(j, hour, activeIncidents) }); });
   scored.sort(function(a, b) { return b.risk.total - a.risk.total; });
   var redeployment = allocateOfficers(scored, numOfficers, manualOverrides);
 
   var nearestJ = routing.findNearestJunction(junctions, incident.lat, incident.lng);
   var dispatchInfo = null;
-  if (nearestJ && redeployment[nearestJ.id]) {
-    var officer = redeployment[nearestJ.id];
-    var eta = routing.calcOfficerETA(officer.station, nearestJ.id, stations, junctions, roadGraph);
-    dispatchInfo = { officer: officer, junction: nearestJ, eta: eta ? eta.totalTime : null, route: eta };
-    officerStatuses[officer.id] = { status: 'dispatched', junction: nearestJ.id, junctionName: nearestJ.name, incident: incident.id, eta: eta ? eta.totalTime : null, timestamp: new Date().toISOString() };
+  if (nearestJ && redeployment[nearestJ.id] && redeployment[nearestJ.id].length > 0) {
+    var dispatchOfficer = redeployment[nearestJ.id][0];
+    var eta = routing.calcOfficerETA(dispatchOfficer.station, nearestJ.id, stations, junctions, roadGraph);
+    dispatchInfo = { officer: dispatchOfficer, junction: nearestJ, eta: eta ? eta.totalTime : null, route: eta };
+    officerStatuses[dispatchOfficer.id] = { status: 'dispatched', junction: nearestJ.id, junctionName: nearestJ.name, incident: incident.id, eta: eta ? eta.totalTime : null, timestamp: new Date().toISOString() };
 
-    // Update response status
     incident.responseStatus = 'TEAM_ASSIGNED';
     incident.responseTimeline.push({ status: 'VERIFIED', timestamp: new Date().toISOString(), detail: 'Location ' + (locVerification.verified ? 'verified' : 'unverified') + ' (' + locVerification.distanceToRoad + 'm from ' + (locVerification.nearestFeature ? locVerification.nearestFeature.name : 'road') + ')' });
     incident.responseTimeline.push({ status: 'TEAM_ASSIGNED', timestamp: new Date().toISOString(), detail: 'Response unit dispatched' });
@@ -432,7 +481,6 @@ app.post('/api/incident', function(req, res) {
 app.get('/api/incident/:id/status', function(req, res) {
   var inc = activeIncidents.find(function(i) { return i.id === req.params.id; });
   if (!inc) return res.status(404).json({ error: 'Incident not found', resolved: true });
-  // Sanitized public view - no officer names/badges
   res.json({
     id: inc.id,
     responseStatus: inc.responseStatus,
@@ -476,7 +524,6 @@ app.post('/api/officer/accept', requireOfficerAuth, function(req, res) {
     officerStatuses[offId].status = 'en-route';
     officerStatuses[offId].acceptedAt = new Date().toISOString();
     io.emit('officer:status', { officerId: offId, status: officerStatuses[offId] });
-    // Update incident response status
     var incId = officerStatuses[offId].incident;
     var inc = activeIncidents.find(function(i) { return i.id === incId; });
     if (inc) {

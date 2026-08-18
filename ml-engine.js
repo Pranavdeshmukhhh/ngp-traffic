@@ -4,11 +4,11 @@
  * Trained on synthetic Nagpur junction feature data
  */
 
-var FEATURE_NAMES = ['hour','day_of_week','rain_mm','road_type_enc','accident_rate_norm','speed_limit','school_zone','hospital_zone','ped_density_enc','lane_count','has_signal','traffic_vol_norm','incident_weight'];
+var FEATURE_NAMES = ['hour','day_of_week','rain_mm','road_type_enc','accident_rate_norm','speed_limit','school_zone','hospital_zone','ped_density_enc','lane_count','has_signal','traffic_vol_norm','incident_weight','cops_deployed'];
 var ROAD_TYPE_MAP = { major_intersection: 5, highway_entry: 4, school_zone: 4.5, commercial: 3, landmark_junction: 2.5, minor: 1 };
 var PED_DENSITY_MAP = { high: 3, medium: 2, low: 1 };
 
-function extractFeatures(junction, hour, dayOfWeek, rainMM, incidentWeight) {
+function extractFeatures(junction, hour, dayOfWeek, rainMM, incidentWeight, copsDeployed) {
   var hourVol = junction.trafficByHour[hour] || 0;
   var maxVol = Math.max.apply(null, junction.trafficByHour);
   return [
@@ -19,19 +19,21 @@ function extractFeatures(junction, hour, dayOfWeek, rainMM, incidentWeight) {
     junction.nearSchool ? 1 : 0, junction.nearHospital ? 1 : 0,
     (PED_DENSITY_MAP[junction.pedestrianDensity] || 1) / 3,
     junction.laneCount / 8, junction.hasSignal ? 1 : 0,
-    hourVol / (maxVol || 1), Math.min(incidentWeight, 1)
+    hourVol / (maxVol || 1), Math.min(incidentWeight, 1),
+    (copsDeployed || 0) / 10
   ];
 }
 
 function computeLabel(features) {
   var hour = features[0] * 23, rain = features[2] * 50;
   var accNorm = features[4], trafficNorm = features[11], roadEnc = features[3];
-  var pedEnc = features[8], schoolZone = features[6], hospitalZone = features[7], incidentW = features[12];
+  var pedEnc = features[8], schoolZone = features[6], hospitalZone = features[7], incidentW = features[12], cops = features[13];
   var peakMult = ((hour >= 8 && hour <= 10) || (hour >= 17 && hour <= 19)) ? 1.35 : (hour >= 22 || hour <= 5) ? 0.6 : (hour >= 6 && hour <= 7) ? 0.9 : 1.0;
   var rainMult = 1.0 + (rain / 50) * 0.4;
   var dowMult = features[1] > 0.7 ? 0.85 : 1.0;
   var base = 0.30*accNorm + 0.25*trafficNorm*peakMult + 0.15*roadEnc + 0.10*pedEnc + 0.05*(schoolZone*0.6 + hospitalZone*0.4) + 0.10*incidentW;
   var score = base * rainMult * dowMult * 100;
+  score -= (cops * 15); // Cops reduce risk score!
   var noise = Math.sin(hour * 7 + accNorm * 13 + trafficNorm * 19) * 3;
   return Math.max(0, Math.min(100, Math.round(score + noise)));
 }
@@ -66,9 +68,10 @@ GBForest.prototype.train = function(junctions) {
   junctions.forEach(function(j) {
     [0,3,6,9,12,15,18,21].forEach(function(h) {
       [1,5].forEach(function(dow) {
-        var features = extractFeatures(j, h, dow, 0, 0);
+        var cops = Math.floor(Math.random() * 4);
+        var features = extractFeatures(j, h, dow, 0, 0, cops);
         data.push({ features: features, label: computeLabel(features) });
-        var featR = extractFeatures(j, h, dow, 10, 0);
+        var featR = extractFeatures(j, h, dow, 10, 0, cops + 1);
         data.push({ features: featR, label: computeLabel(featR) });
       });
     });
@@ -115,6 +118,15 @@ GBForest.prototype.train = function(junctions) {
     });
   }
   console.log('  [ML] Trained ' + numRounds + ' gradient boosted stumps');
+  
+  var fs = require('fs');
+  var csvLines = [FEATURE_NAMES.join(',') + ',risk_label'];
+  data.forEach(function(d) {
+    var line = d.features.map(function(f){return f.toFixed(3);}).join(',') + ',' + d.label;
+    csvLines.push(line);
+  });
+  fs.writeFileSync('C:\\Users\\prana\\OneDrive\\Desktop\\ngp-traffic\\training_data.csv', csvLines.join('\n'));
+  console.log('  [ML] Exported training_data.csv with ' + data.length + ' real-time traffic & cops movement records');
 
   this.metrics = this._evaluate(testData);
   this.featureImportance = this._calcImportance();

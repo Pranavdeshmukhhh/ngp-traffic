@@ -1,15 +1,17 @@
-/* NGP-TRAFFIC Control Room ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¿ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ Main Application */
+/* NGP-TRAFFIC Control Room – Main Application */
 var state = {
   currentData: null,
   deploymentMode: 'optimized',
   liveHour: new Date().getHours(),
   viewingHour: null, // null = live
-  officerCount: 25,
+  officerCount: 654,
   searchFilter: '',
   previousDeployment: null
 };
 
 var map, heatLayer, junctionLayerGroup, officerLayerGroup, stationLayerGroup, incidentLayerGroup;
+var trafficRoadLayerGroup;
+var roadSegmentsData = null;
 var riskChart = null;
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -17,6 +19,7 @@ document.addEventListener('DOMContentLoaded', function() {
   initMap();
   initRiskChart();
   loadInitialData().then(function() {
+    initRoutePlanner(); // must be after map AND data are loaded
     refreshData();
     hideLoading();
     // Auto-refresh every 10 seconds to pick up incidents from Simulation Lab or Citizen App
@@ -89,7 +92,8 @@ function initMap() {
   officerLayerGroup = L.layerGroup().addTo(map);
   stationLayerGroup = L.layerGroup().addTo(map);
   incidentLayerGroup = L.layerGroup().addTo(map);
-  heatLayer = L.heatLayer([], { radius:30, blur:22, maxZoom:15, max:100, gradient:{0.2:'#3dbc72',0.4:'#84cc16',0.6:'#d4a72c',0.8:'#d47c2c',1.0:'#c94444'} }).addTo(map);
+  trafficRoadLayerGroup = L.layerGroup().addTo(map);
+  heatLayer = L.heatLayer([], { radius:15, blur:15, maxZoom:15, max:100, gradient:{0.2:'#3dbc72',0.4:'#84cc16',0.6:'#d4a72c',0.8:'#d47c2c',1.0:'#c94444'} }).addTo(map);
 }
 
 // -- DATA --
@@ -97,11 +101,24 @@ function loadInitialData() {
   return Promise.all([
     fetch('/api/stations').then(function(r){return r.json();}),
     fetch('/api/officers').then(function(r){return r.json();}),
-    fetch('/api/preset-incidents').then(function(r){return r.json();})
+    fetch('/api/preset-incidents').then(function(r){return r.json();}),
+    fetch('/api/road-segments').then(function(r){return r.json();})
   ]).then(function(results) {
     state.stations = results[0];
     state.officers = results[1];
     state.presetIncidents = results[2];
+    roadSegmentsData = results[3];
+    // Populate datalist for route planner landmark autocomplete
+    var datalist = document.getElementById('squareNames');
+    if (datalist && roadSegmentsData) {
+      roadSegmentsData.forEach(function(seg) {
+        var opt = document.createElement('option');
+        opt.value = seg.name;
+        datalist.appendChild(opt);
+      });
+    }
+    // Populate _allJunctions for route risk scoring
+    window._allJunctions = null; // will be set after first refreshData
     plotStations();
   });
 }
@@ -113,6 +130,8 @@ function refreshData() {
     .then(function(data) {
       var prevDeploy = state.currentData ? (state.deploymentMode === 'baseline' ? state.currentData.baselineDeployment : state.currentData.optimizedDeployment) : null;
       state.currentData = data;
+      // Set _allJunctions for route planner risk scoring
+      window._allJunctions = data.junctions;
       updateMap(data);
       updateTable(data);
       updateStats(data);
@@ -128,15 +147,30 @@ function updateMap(data) {
   incidentLayerGroup.clearLayers();
   var deployment = state.deploymentMode === 'baseline' ? data.baselineDeployment : data.optimizedDeployment;
 
-  // Heatmap
-  heatLayer.setLatLngs(data.junctions.map(function(j){return [j.lat,j.lng,j.risk.total];}));
+  // Heatmap from junction risk data
+  var heatPoints = [];
+  data.junctions.forEach(function(j) {
+    heatPoints.push([j.lat, j.lng, j.risk.total]);
+  });
+  // Also add road traffic heat if available
+  if (roadSegmentsData) {
+    roadSegmentsData.forEach(function(seg) {
+      var riskIntensity = seg.trafficVolume ? (seg.trafficVolume * 100) : 50;
+      seg.points.forEach(function(pt, idx) {
+        if (idx % 3 === 0) {
+          heatPoints.push([pt[0], pt[1], riskIntensity]);
+        }
+      });
+    });
+  }
+  heatLayer.setLatLngs(heatPoints);
 
   // Junctions
   data.junctions.forEach(function(j) {
     var color = j.risk.level === 'high' ? '#c94444' : j.risk.level === 'medium' ? '#d4a72c' : '#3dbc72';
     var r = j.risk.level === 'high' ? 8 : j.risk.level === 'medium' ? 6 : 5;
     var offArr = deployment[j.id];
-      var hasOff = !!(offArr && offArr.length > 0);
+    var hasOff = offArr && offArr.length > 0;
     var marker = L.circleMarker([j.lat,j.lng], {
       radius:r, fillColor:color, color:hasOff ? color : '#fff',
       weight: hasOff ? 1.5 : 2.5, opacity:1, fillOpacity:0.8
@@ -149,18 +183,21 @@ function updateMap(data) {
   // Officers
   Object.keys(deployment).forEach(function(jid) {
     var junction = data.junctions.find(function(j){return j.id===jid;});
-    var offArr = deployment[jid];
-      if (!junction || !offArr || offArr.length === 0) return;
-      var officer = offArr[0];
-      var icon = L.divIcon({
-        className:'officer-icon',
-        html:'<div style="background:#4a90d9;color:white;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;">&#128110;</div>',
-        iconSize:[22,22], iconAnchor:[11,11]
-      });
-      var m = L.marker([junction.lat, junction.lng], {icon:icon});
-      m.on('click', function(){ showOfficerDetail(officer.id, jid); });
-    m.bindTooltip(offArr.length + ' Officers Deployed', { direction:'top', offset:[0,-14] });
-    m.addTo(officerLayerGroup);
+    var officerArray = deployment[jid];
+    if (!junction || !officerArray || !Array.isArray(officerArray) || officerArray.length === 0) return;
+    var count = officerArray.length;
+    var icon = L.divIcon({
+      className:'officer-icon',
+      html:'<div style="background:#4a90d9;color:white;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;">' + count + '</div>',
+      iconSize:[26,26],
+      iconAnchor:[13,13]
+    });
+    var offMarker = L.marker([junction.lat, junction.lng], {icon:icon, zIndexOffset:1000});
+    // Show officer names in tooltip
+    var names = officerArray.slice(0, 5).map(function(o) { return o.name; }).join(', ');
+    if (officerArray.length > 5) names += ' +' + (officerArray.length - 5) + ' more';
+    offMarker.bindTooltip(count + ' Officers: ' + names, { direction:'bottom', offset:[0,5] });
+    offMarker.addTo(officerLayerGroup);
   });
 
   // Incidents
@@ -205,8 +242,9 @@ function updateTable(data) {
   var rows = '';
   filtered.forEach(function(j,idx) {
     var offArr = deployment[j.id];
-    var hasOff = !!(offArr && offArr.length > 0);
+    var hasOff = offArr && offArr.length > 0;
     var offName = hasOff ? offArr.length + ' Officers' : '--';
+    if (hasOff && offArr[0]) offName += ' (' + offArr[0].name.split(' ')[0] + '...)';
     var color = j.risk.level==='high'?'#c94444':j.risk.level==='medium'?'#d4a72c':'#3dbc72';
     rows += '<tr onclick="showJunctionDetail(\''+j.id+'\')">' +
       '<td style="color:var(--text-muted);font-weight:600;font-family:var(--font-mono)">'+(idx+1)+'</td>' +
@@ -255,9 +293,11 @@ function updateRiskChart(s) {
 function updateNotifications(data) {
   var list = document.getElementById('notificationsList');
   var items = [];
-  data.unmannedHighRisk.forEach(function(j) {
-    items.push({ icon:'&#9888;', title:j.name+' ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¿ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
-  });
+  if (data.unmannedHighRisk && Array.isArray(data.unmannedHighRisk)) {
+    data.unmannedHighRisk.forEach(function(j) {
+      items.push({ icon:'&#9888;', title:j.name+' - No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
+    });
+  }
   if (data.activeIncidents) {
     data.activeIncidents.forEach(function(inc) {
       items.push({ icon:'&#128680;', title:inc.name, desc:inc.description+' | Severity: '+inc.severity.toUpperCase(), type:'urgent', time:inc.timestamp ? new Date(inc.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : 'Now' });
@@ -272,12 +312,17 @@ function updateNotifications(data) {
 // -- REDEPLOYMENT TOAST --
 function detectRedeployments(prev, curr, data) {
   Object.keys(curr).forEach(function(jid) {
-    if (!prev[jid] || prev[jid].id !== curr[jid].id) {
+    var currArr = curr[jid];
+    var prevArr = prev[jid];
+    if (!currArr || !Array.isArray(currArr) || currArr.length === 0) return;
+    var prevIds = (prevArr && Array.isArray(prevArr)) ? prevArr.map(function(o){return o.id;}) : [];
+    var newOfficers = currArr.filter(function(o) { return prevIds.indexOf(o.id) === -1; });
+    if (newOfficers.length > 0) {
       var j = data.junctions.find(function(x){return x.id===jid;});
       if (j && j.risk.level !== 'low') {
         showToast({
           title:'Redeployment Required',
-          body: curr[jid].name + ' ? ' + j.name + '\nReason: ' + (j.risk.level==='high'?'High-risk junction':'Medium-risk coverage') + '\nPriority: ' + j.risk.level.toUpperCase(),
+          body: newOfficers[0].name + ' -> ' + j.name + '\nReason: ' + (j.risk.level==='high'?'High-risk junction':'Medium-risk coverage') + '\nPriority: ' + j.risk.level.toUpperCase(),
           urgent: j.risk.level === 'high'
         });
       }
@@ -300,7 +345,8 @@ function showJunctionDetail(jid) {
   var j = data.junctions.find(function(x){return x.id===jid;});
   if (!j) return;
   var deployment = state.deploymentMode==='baseline' ? data.baselineDeployment : data.optimizedDeployment;
-  var hasOff = !!deployment[j.id];
+  var offArr = deployment[j.id];
+  var hasOff = offArr && offArr.length > 0;
   var color = j.risk.level==='high'?'#c94444':j.risk.level==='medium'?'#d4a72c':'#3dbc72';
   var hour = getCurrentHour();
   var trafficLevel = j.trafficByHour[hour] > 1200 ? 'Heavy' : j.trafficByHour[hour] > 600 ? 'Moderate' : 'Light';
@@ -317,7 +363,8 @@ function showJunctionDetail(jid) {
   html += '<div class="detail-row"><span class="detail-row-label">Pedestrian</span><span class="detail-row-value">'+j.pedestrianDensity+'</span></div>';
   html += '<div class="detail-row"><span class="detail-row-label">Near School</span><span class="detail-row-value">'+(j.nearSchool?'Yes':'No')+'</span></div>';
   html += '<div class="detail-row"><span class="detail-row-label">Near Hospital</span><span class="detail-row-value">'+(j.nearHospital?'Yes':'No')+'</span></div>';
-  html += '<div class="detail-row"><span class="detail-row-label">Assigned Officers</span><span class="detail-row-value" style="color:'+(hasOff?'var(--green)':'var(--red)')+'">'+(hasOff?offArr.length + ' Officers':'None')+'</span></div>';
+  var offNameStr = hasOff ? offArr.map(function(o){return o.name;}).join(', ') : 'None';
+  html += '<div class="detail-row"><span class="detail-row-label">Assigned Officers</span><span class="detail-row-value" style="color:'+(hasOff?'var(--green)':'var(--red)')+'">'+offNameStr+'</span></div>';
   html += '</div>';
 
   html += '<div class="detail-section"><div class="detail-section-title">Risk Breakdown</div>';
@@ -355,7 +402,13 @@ function showStationDetail(sid) {
   var data = state.currentData;
   var allOfficers = state.officers.filter(function(o){return o.station===sid;});
   var deployment = data ? (state.deploymentMode==='baseline'?data.baselineDeployment:data.optimizedDeployment) : {};
-  var deployedIds = Object.values(deployment).map(function(o){return o.id;});
+  // Collect all deployed officer IDs
+  var deployedIds = [];
+  Object.values(deployment).forEach(function(arr) {
+    if (Array.isArray(arr)) {
+      arr.forEach(function(o) { deployedIds.push(o.id); });
+    }
+  });
   var deployed = allOfficers.filter(function(o){return deployedIds.indexOf(o.id)!==-1;});
   var available = allOfficers.filter(function(o){return deployedIds.indexOf(o.id)===-1;});
 
@@ -368,11 +421,20 @@ function showStationDetail(sid) {
 
   if (deployed.length > 0) {
     html += '<div class="detail-section"><div class="detail-section-title">Deployed Officers</div>';
-    deployed.forEach(function(o) {
-      var jid = Object.keys(deployment).find(function(k){return deployment[k] && deployment[k].some(function(off){return off.id === o.id;});});
-      var j = jid && data ? data.junctions.find(function(x){return x.id===jid;}) : null;
-      html += '<div class="detail-row"><span class="detail-row-label">'+o.name+'</span><span class="detail-row-value" style="font-size:10px">'+(j?j.name:'--')+'</span></div>';
+    deployed.slice(0, 20).forEach(function(o) {
+      var atJunction = null;
+      Object.keys(deployment).forEach(function(jid) {
+        if (Array.isArray(deployment[jid])) {
+          deployment[jid].forEach(function(dOff) {
+            if (dOff.id === o.id) {
+              atJunction = data ? data.junctions.find(function(x){return x.id===jid;}) : null;
+            }
+          });
+        }
+      });
+      html += '<div class="detail-row"><span class="detail-row-label">'+o.name+'</span><span class="detail-row-value" style="font-size:10px">'+(atJunction?atJunction.name:'--')+'</span></div>';
     });
+    if (deployed.length > 20) html += '<div class="detail-row"><span class="detail-row-label" style="color:var(--text-muted)">...and ' + (deployed.length - 20) + ' more</span></div>';
     html += '</div>';
   }
 
@@ -399,7 +461,12 @@ function showOfficerDetail(offId, jid) {
   var data = state.currentData;
   var deployment = data ? (state.deploymentMode==='baseline'?data.baselineDeployment:data.optimizedDeployment) : {};
   var assignedJunction = jid ? (data ? data.junctions.find(function(j){return j.id===jid;}) : null) : null;
-  var isDeployed = Object.values(deployment).some(function(o){return o.id===offId;});
+  var isDeployed = false;
+  Object.values(deployment).forEach(function(arr) {
+    if (Array.isArray(arr)) {
+      arr.forEach(function(o) { if (o.id === offId) isDeployed = true; });
+    }
+  });
 
   var html = '<div class="detail-section"><div class="detail-section-title">Officer Info</div>';
   html += '<div class="detail-row"><span class="detail-row-label">ID</span><span class="detail-row-value">'+officer.id+'</span></div>';
@@ -423,14 +490,14 @@ function closeDetailPanel() {
 // -- CONTROLS --
 function changeOfficers(delta) {
   var input = document.getElementById('officerCount');
-  var val = Math.max(1, Math.min(25, parseInt(input.value)+delta));
+  var val = Math.max(1, Math.min(654, parseInt(input.value)+delta));
   input.value = val;
   state.officerCount = val;
   refreshData();
 }
 
 function onOfficerChange(val) {
-  state.officerCount = Math.max(1, Math.min(25, parseInt(val)));
+  state.officerCount = Math.max(1, Math.min(654, parseInt(val)));
   document.getElementById('officerCount').value = state.officerCount;
   refreshData();
 }
@@ -448,6 +515,15 @@ function toggleLayer(layer) {
   else if (layer==='markers') { document.getElementById('cbMarkers').checked ? map.addLayer(junctionLayerGroup) : map.removeLayer(junctionLayerGroup); }
   else if (layer==='officers') { document.getElementById('cbOfficers').checked ? map.addLayer(officerLayerGroup) : map.removeLayer(officerLayerGroup); }
   else if (layer==='stations') { document.getElementById('cbStations').checked ? map.addLayer(stationLayerGroup) : map.removeLayer(stationLayerGroup); }
+  else if (layer==='traffic') {
+    var cb = document.getElementById('cbTraffic');
+    if (cb && cb.checked) {
+      map.addLayer(trafficRoadLayerGroup);
+      renderTrafficRoads();
+    } else {
+      map.removeLayer(trafficRoadLayerGroup);
+    }
+  }
 }
 
 function filterTable(query) { state.searchFilter = query; if (state.currentData) updateTable(state.currentData); }
@@ -470,21 +546,22 @@ function haversineJS(lat1,lon1,lat2,lon2) {
   var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
+
 // -- Socket.IO Real-time --
 var socket = typeof io !== 'undefined' ? io() : null;
 if (socket) {
   socket.on('incident:new', function(data) {
-    showToast('NEW INCIDENT: ' + data.incident.name, 'high');
+    showToast({ title: 'NEW INCIDENT: ' + data.incident.name, body: 'Severity: ' + data.incident.severity.toUpperCase(), urgent: data.incident.severity === 'high' });
     refreshData();
   });
   socket.on('deployment:update', function() { refreshData(); });
   socket.on('incident:resolved', function(data) {
-    showToast('Incident resolved', 'low');
+    showToast({ title: 'Incident resolved', body: 'ID: ' + data.id, urgent: false });
     refreshData();
   });
   socket.on('incidents:cleared', function() { refreshData(); });
   socket.on('officer:status', function(data) {
-    showToast('Officer ' + data.officerId + ': ' + data.status.status, 'medium');
+    showToast({ title: 'Officer Update', body: 'Officer ' + data.officerId + ': ' + data.status.status, urgent: false });
   });
 }
 
@@ -533,24 +610,34 @@ function showMLMetrics() {
 }
 
 
-// --- OSRM ROUTE PLANNER ---
+// =============================================
+// === OSRM ROUTE PLANNER ===
+// =============================================
 
-let routePlannerActive = false;
-let routeStartCoords = null;
-let routeEndCoords = null;
-let currentRouteLayer = null;
+var routePlannerActive = false;
+var routeStartCoords = null;
+var routeEndCoords = null;
+var currentRouteLayer = null;
 
-const NAGPUR_LANDMARKS = {
+var NAGPUR_LANDMARKS = {
   'sitabuldi': { lat: 21.1466, lng: 79.0779 },
+  'variety square': { lat: 21.1458, lng: 79.0882 },
   'vnit nagpur': { lat: 21.1249, lng: 79.0508 },
+  'vnit': { lat: 21.1249, lng: 79.0508 },
   'airport': { lat: 21.0558, lng: 79.0520 },
   'it park': { lat: 21.1166, lng: 79.0270 },
   'medical square': { lat: 21.1309, lng: 79.0968 },
-  'dharampeth': { lat: 21.1396, lng: 79.0645 }
+  'dharampeth': { lat: 21.1396, lng: 79.0645 },
+  'sadar': { lat: 21.1558, lng: 79.0867 },
+  'manewada': { lat: 21.1683, lng: 79.0700 },
+  'hingna': { lat: 21.1015, lng: 78.9951 },
+  'cotton market': { lat: 21.1533, lng: 79.0820 },
+  'pardi': { lat: 21.1390, lng: 79.1026 },
+  'wardha road': { lat: 21.1170, lng: 79.0930 }
 };
 
 function toggleRoutePlanner() {
-  const overlay = document.getElementById('routePlannerOverlay');
+  var overlay = document.getElementById('routePlannerOverlay');
   routePlannerActive = !routePlannerActive;
   if (routePlannerActive) {
     overlay.classList.add('active');
@@ -558,7 +645,7 @@ function toggleRoutePlanner() {
   } else {
     overlay.classList.remove('active');
     document.getElementById('map').style.cursor = '';
-    if (currentRouteLayer) map.removeLayer(currentRouteLayer);
+    if (currentRouteLayer) { map.removeLayer(currentRouteLayer); currentRouteLayer = null; }
     routeStartCoords = null;
     routeEndCoords = null;
     document.getElementById('routeStart').value = '';
@@ -567,187 +654,316 @@ function toggleRoutePlanner() {
   }
 }
 
-map.on('click', function(e) {
-  if (!routePlannerActive) return;
-  const lat = e.latlng.lat;
-  const lng = e.latlng.lng;
-  
-  if (!routeStartCoords) {
-    routeStartCoords = { lat, lng };
-    document.getElementById('routeStart').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
-  } else if (!routeEndCoords) {
-    routeEndCoords = { lat, lng };
-    document.getElementById('routeEnd').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
-    calculateRoute(); // auto calc
-  } else {
-    // Reset
-    routeStartCoords = { lat, lng };
-    routeEndCoords = null;
-    document.getElementById('routeStart').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
-    document.getElementById('routeEnd').value = '';
-    if (currentRouteLayer) map.removeLayer(currentRouteLayer);
-    document.getElementById('routeResult').innerHTML = '';
+function initRoutePlanner() {
+  if (!map) return;
+  // Also populate landmarks into datalist
+  var datalist = document.getElementById('squareNames');
+  if (datalist) {
+    Object.keys(NAGPUR_LANDMARKS).forEach(function(name) {
+      var opt = document.createElement('option');
+      opt.value = name;
+      datalist.appendChild(opt);
+    });
+    // Add junction names from data
+    if (window._allJunctions) {
+      window._allJunctions.forEach(function(j) {
+        var opt = document.createElement('option');
+        opt.value = j.name;
+        datalist.appendChild(opt);
+      });
+    }
   }
-});
+  map.on('click', function(e) {
+    if (!routePlannerActive) return;
+    var lat = e.latlng.lat;
+    var lng = e.latlng.lng;
+
+    if (!routeStartCoords) {
+      routeStartCoords = { lat: lat, lng: lng };
+      document.getElementById('routeStart').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
+    } else if (!routeEndCoords) {
+      routeEndCoords = { lat: lat, lng: lng };
+      document.getElementById('routeEnd').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
+      calculateRoute(); // auto calc
+    } else {
+      // Reset
+      routeStartCoords = { lat: lat, lng: lng };
+      routeEndCoords = null;
+      document.getElementById('routeStart').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
+      document.getElementById('routeEnd').value = '';
+      if (currentRouteLayer) { map.removeLayer(currentRouteLayer); currentRouteLayer = null; }
+      document.getElementById('routeResult').innerHTML = '';
+    }
+  });
+}
 
 function resolveLocation(input) {
   if (!input) return null;
-  const str = input.toLowerCase().trim();
+  var str = input.toLowerCase().trim();
+  // Check landmarks
   if (NAGPUR_LANDMARKS[str]) return NAGPUR_LANDMARKS[str];
-  const parts = str.split(',').map(s => parseFloat(s));
-  if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-    return { lat: parts[0], lng: parts[1] };
+  // Check junction names
+  if (window._allJunctions) {
+    var match = window._allJunctions.find(function(j) { return j.name.toLowerCase() === str; });
+    if (match) return { lat: match.lat, lng: match.lng };
+  }
+  // Check lat,lng format
+  var parts = str.split(',');
+  if (parts.length === 2) {
+    var lat = parseFloat(parts[0]);
+    var lng = parseFloat(parts[1]);
+    if (!isNaN(lat) && !isNaN(lng)) return { lat: lat, lng: lng };
   }
   return null;
 }
 
 function haversineDist(lat1, lon1, lat2, lon2) {
-  const R = 6371e3; // metres
-  const phi1 = lat1 * Math.PI/180;
-  const phi2 = lat2 * Math.PI/180;
-  const deltaPhi = (lat2-lat1) * Math.PI/180;
-  const deltaLambda = (lon2-lon1) * Math.PI/180;
-  const a = Math.sin(deltaPhi/2) * Math.sin(deltaPhi/2) +
-            Math.cos(phi1) * Math.cos(phi2) *
-            Math.sin(deltaLambda/2) * Math.sin(deltaLambda/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
+  var R = 6371e3;
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLon = (lon2 - lon1) * Math.PI / 180;
+  var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) *
+          Math.sin(dLon/2) * Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-async function calculateRoute() {
-  const startInput = document.getElementById('routeStart').value;
-  const endInput = document.getElementById('routeEnd').value;
-  
-  const start = resolveLocation(startInput) || routeStartCoords;
-  const end = resolveLocation(endInput) || routeEndCoords;
-  
+function calculateRoute() {
+  var startInput = document.getElementById('routeStart').value;
+  var endInput = document.getElementById('routeEnd').value;
+
+  var start = resolveLocation(startInput) || routeStartCoords;
+  var end = resolveLocation(endInput) || routeEndCoords;
+
   if (!start || !end) {
-    alert('Please provide valid start and destination locations.');
+    document.getElementById('routeResult').innerHTML = '<p style="color:#d4a72c">Please provide valid start and destination locations.</p>';
     return;
   }
-  
-  const container = document.getElementById('routeResult');
-  container.innerHTML = '<p>Calculating real road route (OSRM)...</p>';
-  
-  try {
-    // OSRM Public API (requires lon,lat order)
-    const url = `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&alternatives=true`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('OSRM network response was not ok');
-    
-    const data = await res.json();
-    if (!data.routes || data.routes.length === 0) {
-      container.innerHTML = '<p style="color:var(--risk-high)">No route found.</p>';
-      return;
-    }
-    
-    // Evaluate OSRM routes against our junction risk
-    const routesWithRisk = data.routes.map(r => {
-      // Analyze route risk using state.currentData.junctions
-      let riskScore = 0;
-      let incidentCount = 0;
-      let highRiskJunctions = 0;
-      
-      const coords = r.geometry.coordinates; // [lng, lat][]
-      
-      // We sample every Nth point on the geometry to keep it fast
-      const points = [];
-      for(let i=0; i<coords.length; i+=10) { points.push(coords[i]); }
-      if (points.length === 0 && coords.length > 0) points.push(coords[0]);
-      
-      if (state.currentData.junctions) {
-        points.forEach(pt => {
-          const ptLat = pt[1];
-          const ptLng = pt[0];
-          // Find nearest junction within 500m
-          let nearestJ = null;
-          let minDist = 500; 
-          state.currentData.junctions.forEach(j => {
-            const d = haversineDist(ptLat, ptLng, j.lat, j.lng);
-            if (d < minDist) { minDist = d; nearestJ = j; }
-          });
-          
-          if (nearestJ) {
-            riskScore += nearestJ.risk.total;
-            if (nearestJ.risk.total > 70) highRiskJunctions++;
-          }
-        });
-        riskScore = points.length > 0 ? (riskScore / points.length) : 0;
+
+  var container = document.getElementById('routeResult');
+  container.innerHTML = '<p style="color:#7a8ba5">Calculating real road route (OSRM)...</p>';
+
+  // OSRM Public API (requires lon,lat order)
+  var url = 'https://router.project-osrm.org/route/v1/driving/' + start.lng + ',' + start.lat + ';' + end.lng + ',' + end.lat + '?overview=full&geometries=geojson&alternatives=true';
+
+  fetch(url)
+    .then(function(res) {
+      if (!res.ok) throw new Error('OSRM returned status ' + res.status);
+      return res.json();
+    })
+    .then(function(data) {
+      if (!data.routes || data.routes.length === 0) {
+        container.innerHTML = '<p style="color:#c94444">No route found between these points.</p>';
+        return;
       }
-      
-      // OSRM duration is in seconds, distance in meters
-      const durationMins = Math.round(r.duration / 60);
-      const distKm = (r.distance / 1000).toFixed(1);
-      
-      // Composite Score: Lower is better (Time + Risk Penalty)
-      const compositeScore = durationMins + (riskScore * 0.1);
-      
-      return {
-        osrm: r,
-        durationMins,
-        distKm,
-        riskScore: Math.round(riskScore),
-        compositeScore
-      };
+
+      // Evaluate OSRM routes against our junction risk
+      var routesWithRisk = data.routes.map(function(r) {
+        var riskScore = 0;
+        var highRiskJunctions = 0;
+
+        var coords = r.geometry.coordinates; // [lng, lat][]
+
+        // Sample every Nth point on the geometry
+        var points = [];
+        for (var i = 0; i < coords.length; i += 10) { points.push(coords[i]); }
+        if (points.length === 0 && coords.length > 0) points.push(coords[0]);
+
+        if (window._allJunctions) {
+          points.forEach(function(pt) {
+            var ptLat = pt[1];
+            var ptLng = pt[0];
+            var nearestJ = null;
+            var minDist = 500;
+            window._allJunctions.forEach(function(j) {
+              var d = haversineDist(ptLat, ptLng, j.lat, j.lng);
+              if (d < minDist) { minDist = d; nearestJ = j; }
+            });
+            if (nearestJ) {
+              riskScore += nearestJ.risk.total;
+              if (nearestJ.risk.total > 70) highRiskJunctions++;
+            }
+          });
+          riskScore = points.length > 0 ? Math.round(riskScore / points.length) : 0;
+        }
+
+        var durationMins = Math.round(r.duration / 60);
+        var distKm = (r.distance / 1000).toFixed(1);
+        var compositeScore = durationMins + (riskScore * 0.1);
+
+        return {
+          osrm: r,
+          durationMins: durationMins,
+          distKm: distKm,
+          riskScore: riskScore,
+          highRiskJunctions: highRiskJunctions,
+          compositeScore: compositeScore
+        };
+      });
+
+      // Sort by composite score (lowest first)
+      routesWithRisk.sort(function(a, b) { return a.compositeScore - b.compositeScore; });
+
+      displayRouteOnMap(routesWithRisk[0].osrm.geometry.coordinates, routesWithRisk[0].riskScore);
+      renderRouteCards(routesWithRisk);
+    })
+    .catch(function(err) {
+      container.innerHTML = '<p style="color:#c94444">Failed to compute route: ' + err.message + '</p>';
     });
-    
-    // Sort by composite score (lowest first)
-    routesWithRisk.sort((a, b) => a.compositeScore - b.compositeScore);
-    
-    displayRouteOnMap(routesWithRisk[0].osrm.geometry.coordinates, routesWithRisk[0].riskScore);
-    renderRouteCards(routesWithRisk);
-    
-  } catch (err) {
-    container.innerHTML = '<p style="color:var(--risk-high)">Failed to compute route: ' + err.message + '</p>';
-  }
 }
 
 function displayRouteOnMap(coordinates, riskScore) {
-  if (currentRouteLayer) map.removeLayer(currentRouteLayer);
-  
+  if (currentRouteLayer) { map.removeLayer(currentRouteLayer); currentRouteLayer = null; }
+
   // OSRM geojson coordinates are [lng, lat], Leaflet wants [lat, lng]
-  const latLngs = coordinates.map(c => [c[1], c[0]]);
-  
-  const color = riskScore > 70 ? 'var(--risk-high)' : riskScore > 40 ? 'var(--risk-medium)' : 'var(--risk-low)';
-  
-  currentRouteLayer = L.polyline(latLngs, {
+  var latLngs = coordinates.map(function(c) { return [c[1], c[0]]; });
+
+  // Use actual hex colors (Leaflet doesn't support CSS variables)
+  var color = riskScore > 70 ? '#c94444' : riskScore > 40 ? '#d4a72c' : '#3dbc72';
+
+  currentRouteLayer = L.layerGroup();
+
+  var routeLine = L.polyline(latLngs, {
     color: color,
     weight: 6,
     opacity: 0.8,
     dashArray: '10, 5'
-  }).addTo(map);
-  
-  map.fitBounds(currentRouteLayer.getBounds(), { padding: [50, 50] });
+  }).addTo(currentRouteLayer);
+
+  // Add direction arrows
+  try {
+    L.polylineDecorator(routeLine, {
+      patterns: [
+        { offset: '5%', repeat: 80, symbol: L.Symbol.arrowHead({ pixelSize: 10, polygon: false, pathOptions: { stroke: true, color: '#fff', weight: 2 } }) }
+      ]
+    }).addTo(currentRouteLayer);
+  } catch(e) { /* polylineDecorator might not be loaded */ }
+
+  // Add start/end markers
+  if (latLngs.length > 0) {
+    L.circleMarker(latLngs[0], { radius: 8, fillColor: '#3dbc72', color: '#fff', weight: 2, fillOpacity: 1 })
+      .bindTooltip('Start', { permanent: true, direction: 'top', offset: [0, -10] })
+      .addTo(currentRouteLayer);
+    L.circleMarker(latLngs[latLngs.length - 1], { radius: 8, fillColor: '#c94444', color: '#fff', weight: 2, fillOpacity: 1 })
+      .bindTooltip('End', { permanent: true, direction: 'top', offset: [0, -10] })
+      .addTo(currentRouteLayer);
+  }
+
+  currentRouteLayer.addTo(map);
+  map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
 }
 
 function renderRouteCards(routes) {
-  const container = document.getElementById('routeResult');
-  let html = '';
-  
-  routes.forEach((r, idx) => {
-    const isRec = idx === 0;
-    const barColor = r.riskScore > 70 ? 'var(--risk-high)' : r.riskScore > 40 ? 'var(--risk-medium)' : 'var(--risk-low)';
-    const barWidth = Math.min(100, r.riskScore) + '%';
-    
-    // We escape quotes for the onclick handler
-    const coordsJson = JSON.stringify(r.osrm.geometry.coordinates).replace(/"/g, '&quot;');
-    
-    html += `<div class="route-card ${isRec ? 'recommended' : ''}" ${!isRec ? `style="cursor:pointer;" onclick="displayRouteOnMap(${coordsJson}, ${r.riskScore})"` : ''}>
-      <div class="route-header">
-        <div class="route-title">
-          ${isRec ? '<span class="badge-rec">BEST</span>' : ''} Route ${idx + 1}
-        </div>
-        <div class="route-eta">${r.durationMins} min</div>
-      </div>
-      <div class="route-stats">
-        <div class="route-stat-item">Dist: <span>${r.distKm} km</span></div>
-        <div class="route-stat-item">Risk: <span style="color:${barColor}">${r.riskScore}</span></div>
-      </div>
-      <div class="risk-bar-container">
-        <div class="risk-bar" style="width:${barWidth}; background:${barColor}"></div>
-      </div>
-    </div>`;
+  var container = document.getElementById('routeResult');
+  var html = '';
+
+  routes.forEach(function(r, idx) {
+    var isRec = idx === 0;
+    var barColor = r.riskScore > 70 ? '#c94444' : r.riskScore > 40 ? '#d4a72c' : '#3dbc72';
+    var barWidth = Math.min(100, r.riskScore) + '%';
+
+    html += '<div class="route-card ' + (isRec ? 'recommended' : '') + '" style="cursor:pointer;" onclick="selectRoute(' + idx + ')" data-route-idx="' + idx + '">' +
+      '<div class="route-header">' +
+        '<div class="route-title">' +
+          (isRec ? '<span class="badge-rec">BEST</span>' : '') + ' Route ' + (idx + 1) +
+        '</div>' +
+        '<div class="route-eta">' + r.durationMins + ' min</div>' +
+      '</div>' +
+      '<div class="route-stats">' +
+        '<div class="route-stat-item">Dist: <span>' + r.distKm + ' km</span></div>' +
+        '<div class="route-stat-item">Risk: <span style="color:' + barColor + '">' + r.riskScore + '</span></div>' +
+        '<div class="route-stat-item">High-Risk Zones: <span style="color:#c94444">' + r.highRiskJunctions + '</span></div>' +
+      '</div>' +
+      '<div class="risk-bar-container">' +
+        '<div class="risk-bar" style="width:' + barWidth + '; background:' + barColor + '"></div>' +
+      '</div>' +
+    '</div>';
   });
-  
+
   container.innerHTML = html;
+  // Store routes globally for selection
+  window._routeResults = routes;
+}
+
+function selectRoute(idx) {
+  if (!window._routeResults || !window._routeResults[idx]) return;
+  var r = window._routeResults[idx];
+  displayRouteOnMap(r.osrm.geometry.coordinates, r.riskScore);
+}
+
+
+// =============================================
+// === TRAFFIC VISUALIZATION ===
+// =============================================
+
+function randomizeTraffic(noRender) {
+  if (!roadSegmentsData) return;
+  var hour = getCurrentHour();
+  var timeMod = 1.0;
+  if (hour >= 8 && hour <= 11) timeMod = 1.5;
+  else if (hour >= 17 && hour <= 20) timeMod = 1.6;
+  else if (hour >= 1 && hour <= 5) timeMod = 0.2;
+
+  roadSegmentsData.forEach(function(seg) {
+    var baseVal = ((seg.name.length * 13) % 100) / 100.0;
+    var randomJitter = Math.random() * 0.4 - 0.2;
+    var traffic = (baseVal + randomJitter) * timeMod;
+    seg.trafficVolume = Math.min(Math.max(traffic, 0.1), 1.0);
+  });
+  if (!noRender) renderTrafficRoads();
+
+  // Also tell the backend to randomize junction traffic
+  if (!noRender) {
+    fetch('/api/randomize-traffic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hour: hour })
+    }).then(function() { refreshData(); });
+  }
+}
+
+var trafficAnimInterval = null;
+var trafficDecorators = [];
+
+function renderTrafficRoads() {
+  if (!trafficRoadLayerGroup) return;
+  trafficRoadLayerGroup.clearLayers();
+
+  if (trafficAnimInterval) { clearInterval(trafficAnimInterval); trafficAnimInterval = null; }
+  trafficDecorators = [];
+
+  if (!roadSegmentsData) return;
+
+  var cb = document.getElementById('cbTraffic');
+  if (!cb || !cb.checked) return;
+
+  roadSegmentsData.forEach(function(seg) {
+    if (seg.trafficVolume === undefined) seg.trafficVolume = Math.random();
+    var color = seg.trafficVolume > 0.7 ? '#c94444' : (seg.trafficVolume > 0.4 ? '#d4a72c' : '#3dbc72');
+    var weight = seg.trafficVolume > 0.7 ? 5 : (seg.trafficVolume > 0.4 ? 4 : 3);
+    var poly = L.polyline(seg.points, {color: color, weight: weight, opacity: 0.7});
+    poly.bindTooltip(seg.name + '<br>Traffic: ' + Math.round(seg.trafficVolume * 100) + '%', {direction: 'center'});
+    poly.addTo(trafficRoadLayerGroup);
+
+    try {
+      var dec = L.polylineDecorator(poly, {
+        patterns: [
+          { offset: 0, repeat: 40, symbol: L.Symbol.arrowHead({pixelSize: 8, polygon: false, pathOptions: {stroke: true, color: '#fff', weight: 2}}) }
+        ]
+      }).addTo(trafficRoadLayerGroup);
+      trafficDecorators.push({ dec: dec, offset: 0, speed: (1.2 - seg.trafficVolume) * 5 });
+    } catch(e) { /* polylineDecorator might not be loaded */ }
+  });
+
+  if (trafficDecorators.length > 0) {
+    trafficAnimInterval = setInterval(function() {
+      trafficDecorators.forEach(function(item) {
+        item.offset = (item.offset + item.speed) % 40;
+        try {
+          item.dec.setPatterns([
+            { offset: item.offset + 'px', repeat: 40, symbol: L.Symbol.arrowHead({pixelSize: 8, polygon: false, pathOptions: {stroke: true, color: '#fff', weight: 2}}) }
+          ]);
+        } catch(e) {}
+      });
+    }, 100);
+  }
 }
