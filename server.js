@@ -280,7 +280,7 @@ app.get('/api/officer/me', requireOfficerAuth, function(req, res) {
       junctionName: assignedJunction.name,
       riskScore: assignedJunction.risk.total,
       riskLevel: assignedJunction.risk.level,
-      reason: 'AI-optimized deployment â€” ' + assignedJunction.risk.level.toUpperCase() + ' risk area',
+      reason: 'AI-optimized deployment Ã¢â‚¬â€ ' + assignedJunction.risk.level.toUpperCase() + ' risk area',
       priority: assignedJunction.risk.level === 'high' ? 'URGENT' : assignedJunction.risk.level === 'medium' ? 'NORMAL' : 'LOW',
       lat: assignedJunction.lat, lng: assignedJunction.lng
     } : null,
@@ -336,7 +336,7 @@ app.get('/api/allocation', function(req, res) {
     officersDeployed: Object.keys(optimized).reduce((sum, jid) => sum + optimized[jid].length, 0),
     officersTotal: numOfficers,
     unmannedHighRisk: unmanned.length,
-    baselineCoverage: Math.round(Object.keys(baseline).length / Math.max(highMed.length, 1) * 100),
+    baselineCoverage: Math.round(Object.keys(baseline).filter(jid => { var j = scored.find(s => s.id === jid); return j && j.risk.level !== 'low' && baseline[jid].length > 0; }).length / Math.max(highMed.length, 1) * 100),
     optimizedCoverage: Math.round(optHighMed.length / Math.max(highMed.length, 1) * 100),
     avgRiskScore: Math.round(scored.reduce(function(s, j) { return s + j.risk.total; }, 0) / scored.length)
   };

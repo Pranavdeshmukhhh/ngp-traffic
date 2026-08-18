@@ -1,4 +1,4 @@
-/* NGP-TRAFFIC Control Room Ã¯Â¿Â½ Main Application */
+/* NGP-TRAFFIC Control Room ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¿ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ Main Application */
 var state = {
   currentData: null,
   deploymentMode: 'optimized',
@@ -256,7 +256,7 @@ function updateNotifications(data) {
   var list = document.getElementById('notificationsList');
   var items = [];
   data.unmannedHighRisk.forEach(function(j) {
-    items.push({ icon:'&#9888;', title:j.name+' Ã¯Â¿Â½ No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
+    items.push({ icon:'&#9888;', title:j.name+' ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¿ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
   });
   if (data.activeIncidents) {
     data.activeIncidents.forEach(function(inc) {
@@ -530,4 +530,224 @@ function showMLMetrics() {
       });
     }
   });
+}
+
+
+// --- OSRM ROUTE PLANNER ---
+
+let routePlannerActive = false;
+let routeStartCoords = null;
+let routeEndCoords = null;
+let currentRouteLayer = null;
+
+const NAGPUR_LANDMARKS = {
+  'sitabuldi': { lat: 21.1466, lng: 79.0779 },
+  'vnit nagpur': { lat: 21.1249, lng: 79.0508 },
+  'airport': { lat: 21.0558, lng: 79.0520 },
+  'it park': { lat: 21.1166, lng: 79.0270 },
+  'medical square': { lat: 21.1309, lng: 79.0968 },
+  'dharampeth': { lat: 21.1396, lng: 79.0645 }
+};
+
+function toggleRoutePlanner() {
+  const overlay = document.getElementById('routePlannerOverlay');
+  routePlannerActive = !routePlannerActive;
+  if (routePlannerActive) {
+    overlay.classList.add('active');
+    document.getElementById('map').style.cursor = 'crosshair';
+  } else {
+    overlay.classList.remove('active');
+    document.getElementById('map').style.cursor = '';
+    if (currentRouteLayer) map.removeLayer(currentRouteLayer);
+    routeStartCoords = null;
+    routeEndCoords = null;
+    document.getElementById('routeStart').value = '';
+    document.getElementById('routeEnd').value = '';
+    document.getElementById('routeResult').innerHTML = '';
+  }
+}
+
+map.on('click', function(e) {
+  if (!routePlannerActive) return;
+  const lat = e.latlng.lat;
+  const lng = e.latlng.lng;
+  
+  if (!routeStartCoords) {
+    routeStartCoords = { lat, lng };
+    document.getElementById('routeStart').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
+  } else if (!routeEndCoords) {
+    routeEndCoords = { lat, lng };
+    document.getElementById('routeEnd').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
+    calculateRoute(); // auto calc
+  } else {
+    // Reset
+    routeStartCoords = { lat, lng };
+    routeEndCoords = null;
+    document.getElementById('routeStart').value = lat.toFixed(4) + ', ' + lng.toFixed(4);
+    document.getElementById('routeEnd').value = '';
+    if (currentRouteLayer) map.removeLayer(currentRouteLayer);
+    document.getElementById('routeResult').innerHTML = '';
+  }
+});
+
+function resolveLocation(input) {
+  if (!input) return null;
+  const str = input.toLowerCase().trim();
+  if (NAGPUR_LANDMARKS[str]) return NAGPUR_LANDMARKS[str];
+  const parts = str.split(',').map(s => parseFloat(s));
+  if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+    return { lat: parts[0], lng: parts[1] };
+  }
+  return null;
+}
+
+function haversineDist(lat1, lon1, lat2, lon2) {
+  const R = 6371e3; // metres
+  const phi1 = lat1 * Math.PI/180;
+  const phi2 = lat2 * Math.PI/180;
+  const deltaPhi = (lat2-lat1) * Math.PI/180;
+  const deltaLambda = (lon2-lon1) * Math.PI/180;
+  const a = Math.sin(deltaPhi/2) * Math.sin(deltaPhi/2) +
+            Math.cos(phi1) * Math.cos(phi2) *
+            Math.sin(deltaLambda/2) * Math.sin(deltaLambda/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+async function calculateRoute() {
+  const startInput = document.getElementById('routeStart').value;
+  const endInput = document.getElementById('routeEnd').value;
+  
+  const start = resolveLocation(startInput) || routeStartCoords;
+  const end = resolveLocation(endInput) || routeEndCoords;
+  
+  if (!start || !end) {
+    alert('Please provide valid start and destination locations.');
+    return;
+  }
+  
+  const container = document.getElementById('routeResult');
+  container.innerHTML = '<p>Calculating real road route (OSRM)...</p>';
+  
+  try {
+    // OSRM Public API (requires lon,lat order)
+    const url = `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson&alternatives=true`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('OSRM network response was not ok');
+    
+    const data = await res.json();
+    if (!data.routes || data.routes.length === 0) {
+      container.innerHTML = '<p style="color:var(--risk-high)">No route found.</p>';
+      return;
+    }
+    
+    // Evaluate OSRM routes against our junction risk
+    const routesWithRisk = data.routes.map(r => {
+      // Analyze route risk using state.currentData.junctions
+      let riskScore = 0;
+      let incidentCount = 0;
+      let highRiskJunctions = 0;
+      
+      const coords = r.geometry.coordinates; // [lng, lat][]
+      
+      // We sample every Nth point on the geometry to keep it fast
+      const points = [];
+      for(let i=0; i<coords.length; i+=10) { points.push(coords[i]); }
+      if (points.length === 0 && coords.length > 0) points.push(coords[0]);
+      
+      if (state.currentData.junctions) {
+        points.forEach(pt => {
+          const ptLat = pt[1];
+          const ptLng = pt[0];
+          // Find nearest junction within 500m
+          let nearestJ = null;
+          let minDist = 500; 
+          state.currentData.junctions.forEach(j => {
+            const d = haversineDist(ptLat, ptLng, j.lat, j.lng);
+            if (d < minDist) { minDist = d; nearestJ = j; }
+          });
+          
+          if (nearestJ) {
+            riskScore += nearestJ.risk.total;
+            if (nearestJ.risk.total > 70) highRiskJunctions++;
+          }
+        });
+        riskScore = points.length > 0 ? (riskScore / points.length) : 0;
+      }
+      
+      // OSRM duration is in seconds, distance in meters
+      const durationMins = Math.round(r.duration / 60);
+      const distKm = (r.distance / 1000).toFixed(1);
+      
+      // Composite Score: Lower is better (Time + Risk Penalty)
+      const compositeScore = durationMins + (riskScore * 0.1);
+      
+      return {
+        osrm: r,
+        durationMins,
+        distKm,
+        riskScore: Math.round(riskScore),
+        compositeScore
+      };
+    });
+    
+    // Sort by composite score (lowest first)
+    routesWithRisk.sort((a, b) => a.compositeScore - b.compositeScore);
+    
+    displayRouteOnMap(routesWithRisk[0].osrm.geometry.coordinates, routesWithRisk[0].riskScore);
+    renderRouteCards(routesWithRisk);
+    
+  } catch (err) {
+    container.innerHTML = '<p style="color:var(--risk-high)">Failed to compute route: ' + err.message + '</p>';
+  }
+}
+
+function displayRouteOnMap(coordinates, riskScore) {
+  if (currentRouteLayer) map.removeLayer(currentRouteLayer);
+  
+  // OSRM geojson coordinates are [lng, lat], Leaflet wants [lat, lng]
+  const latLngs = coordinates.map(c => [c[1], c[0]]);
+  
+  const color = riskScore > 70 ? 'var(--risk-high)' : riskScore > 40 ? 'var(--risk-medium)' : 'var(--risk-low)';
+  
+  currentRouteLayer = L.polyline(latLngs, {
+    color: color,
+    weight: 6,
+    opacity: 0.8,
+    dashArray: '10, 5'
+  }).addTo(map);
+  
+  map.fitBounds(currentRouteLayer.getBounds(), { padding: [50, 50] });
+}
+
+function renderRouteCards(routes) {
+  const container = document.getElementById('routeResult');
+  let html = '';
+  
+  routes.forEach((r, idx) => {
+    const isRec = idx === 0;
+    const barColor = r.riskScore > 70 ? 'var(--risk-high)' : r.riskScore > 40 ? 'var(--risk-medium)' : 'var(--risk-low)';
+    const barWidth = Math.min(100, r.riskScore) + '%';
+    
+    // We escape quotes for the onclick handler
+    const coordsJson = JSON.stringify(r.osrm.geometry.coordinates).replace(/"/g, '&quot;');
+    
+    html += `<div class="route-card ${isRec ? 'recommended' : ''}" ${!isRec ? `style="cursor:pointer;" onclick="displayRouteOnMap(${coordsJson}, ${r.riskScore})"` : ''}>
+      <div class="route-header">
+        <div class="route-title">
+          ${isRec ? '<span class="badge-rec">BEST</span>' : ''} Route ${idx + 1}
+        </div>
+        <div class="route-eta">${r.durationMins} min</div>
+      </div>
+      <div class="route-stats">
+        <div class="route-stat-item">Dist: <span>${r.distKm} km</span></div>
+        <div class="route-stat-item">Risk: <span style="color:${barColor}">${r.riskScore}</span></div>
+      </div>
+      <div class="risk-bar-container">
+        <div class="risk-bar" style="width:${barWidth}; background:${barColor}"></div>
+      </div>
+    </div>`;
+  });
+  
+  container.innerHTML = html;
 }
