@@ -151,6 +151,7 @@
       </div>
     </aside>
   </main>
+  <datalist id="squareNames"></datalist>
 
   <!-- Detail Side Panel -->
   <div class="detail-panel" id="detailPanel" style="display:none;">
@@ -176,11 +177,11 @@
       <div class="route-inputs">
         <div class="route-input-group">
           <label>Start:</label>
-          <input type="text" id="routeStart" placeholder="Click map or type landmark..." autocomplete="off">
+          <input type="text" id="routeStart" list="squareNames" placeholder="Click map or type landmark..." autocomplete="off">
         </div>
         <div class="route-input-group">
           <label>Destination:</label>
-          <input type="text" id="routeEnd" placeholder="Click map or type landmark..." autocomplete="off">
+          <input type="text" id="routeEnd" list="squareNames" placeholder="Click map or type landmark..." autocomplete="off">
         </div>
       </div>
       <button class="btn btn-primary" style="width:100%; margin-top:10px;" onclick="calculateRoute()">Find Route</button>
