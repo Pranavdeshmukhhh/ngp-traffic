@@ -1,4 +1,4 @@
-/* NGP-TRAFFIC Control Room � Main Application */
+/* NGP-TRAFFIC Control Room ï¿½ Main Application */
 var state = {
   currentData: null,
   deploymentMode: 'optimized',
@@ -149,15 +149,16 @@ function updateMap(data) {
   // Officers
   Object.keys(deployment).forEach(function(jid) {
     var junction = data.junctions.find(function(j){return j.id===jid;});
-    var officer = deployment[jid];
-    if (!junction || !officer) return;
-    var icon = L.divIcon({
-      className:'officer-icon',
-      html:'<div style="background:#4a90d9;color:white;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;font-weight:bold;">'+offArr.length+'</div>',
-      iconSize:[22,22], iconAnchor:[11,11]
-    });
-    var m = L.marker([junction.lat+0.0008,junction.lng+0.0008], {icon:icon});
-    m.on('click', function(){ showOfficerDetail(officer.id, jid); });
+    var offArr = deployment[jid];
+      if (!junction || !offArr || offArr.length === 0) return;
+      var officer = offArr[0];
+      var icon = L.divIcon({
+        className:'officer-icon',
+        html:'<div style="background:#4a90d9;color:white;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;">&#128110;</div>',
+        iconSize:[22,22], iconAnchor:[11,11]
+      });
+      var m = L.marker([junction.lat, junction.lng], {icon:icon});
+      m.on('click', function(){ showOfficerDetail(officer.id, jid); });
     m.bindTooltip(offArr.length + ' Officers Deployed', { direction:'top', offset:[0,-14] });
     m.addTo(officerLayerGroup);
   });
@@ -255,7 +256,7 @@ function updateNotifications(data) {
   var list = document.getElementById('notificationsList');
   var items = [];
   data.unmannedHighRisk.forEach(function(j) {
-    items.push({ icon:'&#9888;', title:j.name+' � No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
+    items.push({ icon:'&#9888;', title:j.name+' ï¿½ No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
   });
   if (data.activeIncidents) {
     data.activeIncidents.forEach(function(inc) {
