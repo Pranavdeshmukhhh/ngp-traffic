@@ -152,23 +152,6 @@ function updateMap(data) {
   roadRiskLayer.clearLayers();
   var deployment = state.deploymentMode === 'baseline' ? data.baselineDeployment : data.optimizedDeployment;
 
-  // Road-aligned risk heatmap
-  if (document.getElementById('cbHeatmap').checked && state.roadSegments.length > 0) {
-    state.roadSegments.forEach(function(seg) {
-      var segRisk = getSegmentRisk(seg, data.junctions);
-      var color = getRiskColorForScore(segRisk);
-      var weight = segRisk >= 70 ? 7 : segRisk >= 40 ? 5 : 3;
-      var opacity = segRisk >= 70 ? 0.7 : segRisk >= 40 ? 0.5 : 0.35;
-      var latlngs = seg.points.map(function(p) { return [p[0], p[1]]; });
-      // Main risk line
-      L.polyline(latlngs, { color: color, weight: weight, opacity: opacity, lineCap: 'round', lineJoin: 'round' }).bindTooltip(seg.name + ' \u2014 Risk: ' + segRisk, { sticky: true }).addTo(roadRiskLayer);
-      // Subtle glow
-      if (segRisk >= 55) {
-        L.polyline(latlngs, { color: color, weight: weight + 6, opacity: 0.12, lineCap: 'round', lineJoin: 'round' }).addTo(roadRiskLayer);
-      }
-    });
-  }
-
   // Junctions
   data.junctions.forEach(function(j) {
     var color = j.risk.level === 'high' ? '#c94444' : j.risk.level === 'medium' ? '#d4a72c' : '#3dbc72';
@@ -242,7 +225,7 @@ function updateTable(data) {
   tbody.innerHTML = filtered.map(function(j, i) {
     var color = j.risk.level === 'high' ? 'var(--risk-high)' : j.risk.level === 'medium' ? 'var(--risk-medium)' : 'var(--risk-low)';
     var off = deployment[j.id];
-    return '<tr onclick="showJunctionDetail(\''+j.id+'\')" style="cursor:pointer"><td>'+(i+1)+'</td><td>'+j.name+'</td><td style="color:'+color+';font-weight:700">'+j.risk.total+'</td><td><span class="risk-badge risk-'+j.risk.level+'">'+j.risk.level.toUpperCase()+'</span></td><td>'+(off?off.name:'ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â')+'</td></tr>';
+    return '<tr onclick="showJunctionDetail(\''+j.id+'\')" style="cursor:pointer"><td>'+(i+1)+'</td><td>'+j.name+'</td><td style="color:'+color+';font-weight:700">'+j.risk.total+'</td><td><span class="risk-badge risk-'+j.risk.level+'">'+j.risk.level.toUpperCase()+'</span></td><td>'+(off?off.name:'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â')+'</td></tr>';
   }).join('');
 }
 
@@ -304,7 +287,7 @@ function updateNotifications(data) {
   // Show historical label if not live
   var prefix = '';
   if (!isLiveMode()) {
-    prefix = '<div style="padding:6px 10px;background:rgba(212,167,44,0.1);border:1px solid rgba(212,167,44,0.2);border-radius:6px;font-size:11px;color:#d4a72c;margin-bottom:6px;text-align:center;">&#128337; Historical View ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Live notifications paused</div>';
+    prefix = '<div style="padding:6px 10px;background:rgba(212,167,44,0.1);border:1px solid rgba(212,167,44,0.2);border-radius:6px;font-size:11px;color:#d4a72c;margin-bottom:6px;text-align:center;">&#128337; Historical View ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â Live notifications paused</div>';
   }
   list.innerHTML = prefix + items.slice(0, 12).map(function(n) {
     return '<div class="notif-item' + (n.urgent ? ' urgent' : '') + '"><span class="notif-icon">' + n.icon + '</span><div class="notif-content"><div class="notif-title">' + n.title + '</div><div class="notif-desc">' + n.desc + '</div></div></div>';
