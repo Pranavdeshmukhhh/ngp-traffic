@@ -193,7 +193,7 @@ function updateMap(data) {
       html:'<div style="background:#4a90d9;color:white;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;">&#128110;</div>',
       iconSize:[22,22], iconAnchor:[11,11]
     });
-    var m = L.marker([junction.lat+0.0008,junction.lng+0.0008], {icon:icon});
+    var m = L.marker([junction.lat, junction.lng], {icon:icon});
     m.on('click', function(){ showOfficerDetail(officer.id, jid); });
     m.bindTooltip(officer.name, { direction:'top', offset:[0,-14] });
     m.addTo(officerLayerGroup);
@@ -242,7 +242,7 @@ function updateTable(data) {
   tbody.innerHTML = filtered.map(function(j, i) {
     var color = j.risk.level === 'high' ? 'var(--risk-high)' : j.risk.level === 'medium' ? 'var(--risk-medium)' : 'var(--risk-low)';
     var off = deployment[j.id];
-    return '<tr onclick="showJunctionDetail(\''+j.id+'\')" style="cursor:pointer"><td>'+(i+1)+'</td><td>'+j.name+'</td><td style="color:'+color+';font-weight:700">'+j.risk.total+'</td><td><span class="risk-badge risk-'+j.risk.level+'">'+j.risk.level.toUpperCase()+'</span></td><td>'+(off?off.name:'â€”')+'</td></tr>';
+    return '<tr onclick="showJunctionDetail(\''+j.id+'\')" style="cursor:pointer"><td>'+(i+1)+'</td><td>'+j.name+'</td><td style="color:'+color+';font-weight:700">'+j.risk.total+'</td><td><span class="risk-badge risk-'+j.risk.level+'">'+j.risk.level.toUpperCase()+'</span></td><td>'+(off?off.name:'ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â')+'</td></tr>';
   }).join('');
 }
 
@@ -304,7 +304,7 @@ function updateNotifications(data) {
   // Show historical label if not live
   var prefix = '';
   if (!isLiveMode()) {
-    prefix = '<div style="padding:6px 10px;background:rgba(212,167,44,0.1);border:1px solid rgba(212,167,44,0.2);border-radius:6px;font-size:11px;color:#d4a72c;margin-bottom:6px;text-align:center;">&#128337; Historical View â€” Live notifications paused</div>';
+    prefix = '<div style="padding:6px 10px;background:rgba(212,167,44,0.1);border:1px solid rgba(212,167,44,0.2);border-radius:6px;font-size:11px;color:#d4a72c;margin-bottom:6px;text-align:center;">&#128337; Historical View ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Live notifications paused</div>';
   }
   list.innerHTML = prefix + items.slice(0, 12).map(function(n) {
     return '<div class="notif-item' + (n.urgent ? ' urgent' : '') + '"><span class="notif-icon">' + n.icon + '</span><div class="notif-content"><div class="notif-title">' + n.title + '</div><div class="notif-desc">' + n.desc + '</div></div></div>';
@@ -730,6 +730,7 @@ async function calculateRoute() {
     
     displayRouteOnMap(routesWithRisk[0].osrm.geometry.coordinates, routesWithRisk[0].riskScore);
     renderRouteCards(routesWithRisk);
+    deployOfficersOnRoute(routesWithRisk[0].routeJunctions);
     
   } catch (err) {
     container.innerHTML = '<p style="color:var(--risk-high)">Failed to compute route: ' + err.message + '</p>';
@@ -744,14 +745,29 @@ function displayRouteOnMap(coordinates, riskScore) {
   
   const color = riskScore > 70 ? 'var(--risk-high)' : riskScore > 40 ? 'var(--risk-medium)' : 'var(--risk-low)';
   
-  currentRouteLayer = L.polyline(latLngs, {
+  const polyline = L.polyline(latLngs, {
     color: color,
     weight: 6,
-    opacity: 0.8,
-    dashArray: '10, 5'
-  }).addTo(map);
+    opacity: 0.9
+  });
   
-  map.fitBounds(currentRouteLayer.getBounds(), { padding: [50, 50] });
+  // Continuous arrow pattern using Leaflet PolylineDecorator
+  const arrows = L.polylineDecorator(polyline, {
+    patterns: [
+      {
+        offset: '5%', 
+        repeat: '10%', 
+        symbol: L.Symbol.arrowHead({
+          pixelSize: 14, 
+          polygon: false, 
+          pathOptions: { stroke: true, color: '#ffffff', weight: 2, opacity: 0.9 }
+        })
+      }
+    ]
+  });
+
+  currentRouteLayer = L.layerGroup([polyline, arrows]).addTo(map);
+  map.fitBounds(polyline.getBounds(), { padding: [50, 50] });
 }
 
 function renderRouteCards(routes) {
@@ -784,4 +800,31 @@ function renderRouteCards(routes) {
   });
   
   container.innerHTML = html;
+}
+
+function deployOfficersOnRoute(routeJunctions) {
+  if (!routeJunctions || routeJunctions.length === 0) return;
+  
+  // Clear normal officer deployment layer and visually deploy officers only on this route
+  officerLayerGroup.clearLayers();
+  
+  // Get max officers user requested
+  const maxOfficers = parseInt(document.getElementById('officerCount').value, 10) || 25;
+  const numToDeploy = Math.min(maxOfficers, routeJunctions.length);
+  
+  // Sort route junctions by risk descending to prioritize deployment on the route
+  const sortedJunctions = [...routeJunctions].sort((a, b) => b.risk.total - a.risk.total);
+  const targetJunctions = sortedJunctions.slice(0, numToDeploy);
+  
+  targetJunctions.forEach((junction, i) => {
+    var icon = L.divIcon({
+      className:'officer-icon',
+      html:'<div style="background:#22c55e;color:white;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;">&#128110;</div>',
+      iconSize:[22,22], iconAnchor:[11,11]
+    });
+    // Snap directly to the junction coordinates (on the road)
+    var m = L.marker([junction.lat, junction.lng], {icon:icon, zIndexOffset: 1000});
+    m.bindTooltip("Route Escort " + (i+1) + " at " + junction.name, { direction:'top', offset:[0,-14] });
+    m.addTo(officerLayerGroup);
+  });
 }
