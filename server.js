@@ -163,6 +163,18 @@ function calcRiskScore(junction, hour, incidents) {
 // === Officer Allocation ===
 function allocateOfficers(scored, numOfficers, overrides) {
   var deployment = {};
+  scored.forEach(j => deployment[j.id] = []);
+  var available = officers.slice(0, numOfficers);
+  var jIdx = 0;
+  available.forEach(o => {
+    if (jIdx >= scored.length) jIdx = 0;
+    deployment[scored[jIdx].id].push(o);
+    jIdx++;
+  });
+  return deployment;
+}
+function allocateOfficers_OLD(scored, numOfficers, overrides) {
+  var deployment = {};
   var available = officers.slice(0, numOfficers);
   var usedOfficerIds = {};
   Object.keys(overrides).forEach(function(jid) {
@@ -190,6 +202,17 @@ function allocateOfficers(scored, numOfficers, overrides) {
 }
 
 function getBaselineDeployment() {
+  var baseline = {};
+  junctions.forEach(j => baseline[j.id] = []);
+  var jIdx = 0;
+  officers.forEach(o => {
+    if (jIdx >= junctions.length) jIdx = 0;
+    baseline[junctions[jIdx].id].push(o);
+    jIdx++;
+  });
+  return baseline;
+}
+function getBaselineDeployment_OLD() {
   var baseline = {};
   officers.forEach(function(o) {
     var st = stations.find(function(s) { return s.id === o.station; });
