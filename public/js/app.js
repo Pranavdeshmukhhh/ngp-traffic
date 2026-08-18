@@ -1,4 +1,4 @@
-/* NGP-TRAFFIC Control Room ï¿½ Main Application */
+/* NGP-TRAFFIC Control Room Ã¯Â¿Â½ Main Application */
 var state = {
   currentData: null,
   deploymentMode: 'optimized',
@@ -256,7 +256,7 @@ function updateNotifications(data) {
   var list = document.getElementById('notificationsList');
   var items = [];
   data.unmannedHighRisk.forEach(function(j) {
-    items.push({ icon:'&#9888;', title:j.name+' ï¿½ No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
+    items.push({ icon:'&#9888;', title:j.name+' Ã¯Â¿Â½ No officer assigned', desc:'High-risk junction (Score: '+j.risk.total+') requires attention', type:'warning', time:'Now' });
   });
   if (data.activeIncidents) {
     data.activeIncidents.forEach(function(inc) {
