@@ -11,6 +11,8 @@ const {
   app,
   predictDeployments,
   computeTrend,
+  computeFreshness,
+  isValidTileCoord,
   haversineMeters,
   findNearestPoliceStation,
   describeWeatherCode,
@@ -44,7 +46,7 @@ async function run() {
 
   console.log('\n=== NGP-TRAFFIC Test Suite ===\n');
 
-  console.log('Data & Cleanup Integrity:');
+  console.log('Data, Docs & Cleanup Integrity:');
   await test('50 Nagpur junctions loaded with valid coordinates', () => {
     assert.strictEqual(junctions.length, 50);
     for (const j of junctions) {
@@ -91,6 +93,69 @@ async function run() {
     for (const rel of removedFiles) {
       assert(!fs.existsSync(path.join(rootDir, rel)), `Expected deleted file exists: ${rel}`);
     }
+  });
+
+  await test('README matches 150 m incident radius and app.js uses distinct light/dark basemaps', () => {
+    const readme = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8');
+    assert(readme.includes('150 m'), 'README should document 150 m radius');
+    assert(!readme.includes('within 500 m'), 'README must not claim outdated 500 m radius');
+
+    const appJs = fs.readFileSync(path.join(rootDir, 'public', 'js', 'app.js'), 'utf8');
+    const lightMatch = appJs.match(/light:\s*'([^']+)'/);
+    const darkMatch = appJs.match(/dark:\s*'([^']+)'/);
+    assert(lightMatch && darkMatch, 'Expected light and dark BASEMAPS entries');
+    assert.notStrictEqual(lightMatch[1], darkMatch[1], 'BASEMAPS.dark must differ from BASEMAPS.light');
+  });
+
+  console.log('\nFreshness & Tile Validation:');
+  await test('computeFreshness returns updatedAt=null and stale=true when all upstream calls fail', () => {
+    const res = computeFreshness({
+      lastSuccessAt: { flow: null, incidents: null, weather: null },
+      lastAttemptFailed: { flow: true, incidents: true, weather: true },
+      tomtomConfigured: true,
+      hasAttemptedRefresh: true,
+      nowMs: 1_700_000_000_000
+    });
+    assert.strictEqual(res.updatedAt, null);
+    assert.strictEqual(res.stale, true);
+    assert.deepStrictEqual(res.staleSources, ['flow', 'incidents', 'weather']);
+  });
+
+  await test('computeFreshness preserves prior lastSuccessAt and flags only failed/expired sources', () => {
+    const nowMs = Date.parse('2026-11-24T10:15:00.000Z');
+    const res = computeFreshness({
+      lastSuccessAt: {
+        flow: '2026-11-24T10:05:00.000Z', // 10m ago (> 8m threshold)
+        incidents: '2026-11-24T10:10:00.000Z', // 5m ago
+        weather: '2026-11-24T10:14:00.000Z' // 1m ago
+      },
+      lastAttemptFailed: { flow: true, incidents: false, weather: false },
+      tomtomConfigured: true,
+      hasAttemptedRefresh: true,
+      nowMs
+    });
+    assert.strictEqual(res.updatedAt, '2026-11-24T10:14:00.000Z');
+    assert.strictEqual(res.stale, true);
+    assert.deepStrictEqual(res.staleSources, ['flow']);
+
+    const keyless = computeFreshness({
+      lastSuccessAt: { flow: null, incidents: null, weather: '2026-11-24T10:14:00.000Z' },
+      lastAttemptFailed: { flow: false, incidents: false, weather: false },
+      tomtomConfigured: false,
+      hasAttemptedRefresh: true,
+      nowMs
+    });
+    assert.strictEqual(keyless.stale, false);
+    assert.deepStrictEqual(keyless.staleSources, []);
+  });
+
+  await test('isValidTileCoord enforces z in [0,19] and x,y in [0, 2^z)', () => {
+    assert.strictEqual(isValidTileCoord(0, 0, 0), true);
+    assert.strictEqual(isValidTileCoord(1, 1, 1), true);
+    assert.strictEqual(isValidTileCoord(1, 2, 0), false);
+    assert.strictEqual(isValidTileCoord(1, 0, 2), false);
+    assert.strictEqual(isValidTileCoord(22, 0, 0), false);
+    assert.strictEqual(isValidTileCoord(-1, 0, 0), false);
   });
 
   console.log('\nGeo & Weather Helpers:');
@@ -150,7 +215,6 @@ async function run() {
   });
 
   await test('Full speed (32 vs 32 km/h) with closure 300m away is NOT falsely flagged as Closed', () => {
-    // ~300m north of Variety Square
     const closure300m = [{ lat: 21.1485, lng: 79.0882, iconCategory: 8, description: 'Side street closed' }];
     const res = predictDeployments(
       [{ ...baseJunction, currentSpeed: 32, freeFlowSpeed: 32, roadClosure: false }],
@@ -340,21 +404,32 @@ async function run() {
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
-    await test('GET /api/health returns 200 and expected telemetry schema', async () => {
+    await test('GET /api/health returns 200 and includes lastSuccessAt, stale, and staleSources', async () => {
       const res = await fetch(`${baseUrl}/api/health`);
       assert.strictEqual(res.status, 200);
       const body = await res.json();
       assert.strictEqual(body.status, 'ok');
       assert.strictEqual(typeof body.tomtomConfigured, 'boolean');
       assert.strictEqual(body.monitoredJunctions, 16);
-      assert('updatedAt' in body);
-      assert('activeClients' in body);
-      assert('alertsCount' in body);
+      assert.strictEqual(typeof body.stale, 'boolean');
+      assert(Array.isArray(body.staleSources));
+      assert(body.lastSuccessAt && 'flow' in body.lastSuccessAt && 'incidents' in body.lastSuccessAt && 'weather' in body.lastSuccessAt);
     });
 
-    await test('GET /tiles/traffic/abc/0/0.png returns 400 and ?theme=dark is accepted', async () => {
-      const badRes = await fetch(`${baseUrl}/tiles/traffic/abc/0/0.png`);
-      assert.strictEqual(badRes.status, 400);
+    await test('Tile endpoints enforce 2^z bounds and z <= 19 on both traffic and basemap routes', async () => {
+      const [badTraffic, outOfBoundsTraffic, highZoomTraffic, badBasemap, outOfBoundsBasemap] =
+        await Promise.all([
+          fetch(`${baseUrl}/tiles/traffic/abc/0/0.png`),
+          fetch(`${baseUrl}/tiles/traffic/1/2/0.png`),
+          fetch(`${baseUrl}/tiles/traffic/22/0/0.png`),
+          fetch(`${baseUrl}/tiles/basemap/abc/0/0.png`),
+          fetch(`${baseUrl}/tiles/basemap/1/2/0.png`)
+        ]);
+      assert.strictEqual(badTraffic.status, 400);
+      assert.strictEqual(outOfBoundsTraffic.status, 400);
+      assert.strictEqual(highZoomTraffic.status, 400);
+      assert.strictEqual(badBasemap.status, 400);
+      assert.strictEqual(outOfBoundsBasemap.status, 400);
 
       const darkRes = await fetch(`${baseUrl}/tiles/traffic/13/5897/3585.png?theme=dark`);
       assert([200, 204, 502].includes(darkRes.status), `Unexpected status: ${darkRes.status}`);

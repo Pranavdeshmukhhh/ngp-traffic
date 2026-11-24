@@ -3,8 +3,14 @@
 
   const NAGPUR_CENTER = [21.1458, 79.0882];
   const BASEMAPS = {
-    light: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    dark: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+    light: '/tiles/basemap/{z}/{x}/{y}.png?theme=light',
+    dark: '/tiles/basemap/{z}/{x}/{y}.png?theme=dark',
+    osmFallback: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+  };
+  const STALE_THRESHOLDS_MS = {
+    flow: 8 * 60 * 1000,
+    incidents: 24 * 60 * 1000,
+    weather: 30 * 60 * 1000
   };
 
   function escapeHtml(value) {
@@ -45,11 +51,34 @@
     return `/tiles/traffic/{z}/{x}/{y}.png?theme=${encodeURIComponent(theme)}&v=${version}`;
   }
 
-  let baseLayer = L.tileLayer(BASEMAPS[savedTheme], {
-    attribution: '&copy; OpenStreetMap contributors',
-    className: 'basemap-tiles',
-    maxZoom: 19
-  }).addTo(map);
+  let usingOsmFallback = false;
+
+  function createBaseLayer(theme, forceOsmFallback) {
+    usingOsmFallback = Boolean(forceOsmFallback);
+    if (usingOsmFallback) {
+      return L.tileLayer(BASEMAPS.osmFallback, {
+        attribution: '&copy; OpenStreetMap contributors &middot; Weather: Open-Meteo (CC BY 4.0)',
+        className: theme === 'dark' ? 'basemap-osm-dark' : 'basemap-osm-light',
+        maxZoom: 19
+      });
+    }
+
+    const layer = L.tileLayer(BASEMAPS[theme], {
+      attribution: '&copy; TomTom &copy; OpenStreetMap contributors &middot; Weather: Open-Meteo (CC BY 4.0)',
+      className: 'basemap-tiles',
+      maxZoom: 19
+    });
+    layer.once('tileerror', () => {
+      if (usingOsmFallback) return;
+      const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
+      if (baseLayer) map.removeLayer(baseLayer);
+      baseLayer = createBaseLayer(activeTheme, true).addTo(map);
+      baseLayer.bringToBack();
+    });
+    return layer;
+  }
+
+  let baseLayer = createBaseLayer(savedTheme, false).addTo(map);
 
   const trafficFlowLayer = L.tileLayer(buildTrafficTileUrl(savedTheme, tileVersion), {
     maxZoom: 19,
@@ -63,6 +92,9 @@
   // ── State ──
   let latestState = {
     updatedAt: null,
+    lastSuccessAt: { flow: null, incidents: null, weather: null },
+    stale: false,
+    staleSources: [],
     tomtomConfigured: true,
     weather: null,
     junctions: [],
@@ -83,7 +115,10 @@
 
   // ── DOM Elements ──
   const setupBanner = document.getElementById('setup-banner');
+  const liveIndicator = document.getElementById('live-indicator');
   const updatedText = document.getElementById('updated-text');
+  const staleBadge = document.getElementById('stale-badge');
+  const sourcesFreshness = document.getElementById('sources-freshness');
   const weatherSep = document.getElementById('weather-sep');
   const weatherText = document.getElementById('weather-text');
 
@@ -129,11 +164,7 @@
     if (baseLayer) {
       map.removeLayer(baseLayer);
     }
-    baseLayer = L.tileLayer(BASEMAPS[theme], {
-      attribution: '&copy; OpenStreetMap contributors',
-      className: 'basemap-tiles',
-      maxZoom: 19
-    }).addTo(map);
+    baseLayer = createBaseLayer(theme, usingOsmFallback || latestState.tomtomConfigured === false).addTo(map);
     baseLayer.bringToBack();
 
     tileVersion = Date.now();
@@ -208,9 +239,51 @@
   drawerOpenBtn.addEventListener('click', () => setDrawerOpen(true));
 
   // ── Render Live State ──
+  function formatShortAge(isoString) {
+    if (!isoString) return 'offline';
+    const diffSec = Math.max(0, Math.floor((Date.now() - Date.parse(isoString)) / 1000));
+    if (diffSec < 60) return 'now';
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}m`;
+    return `${Math.floor(diffMin / 60)}h`;
+  }
+
+  function isClientDetectedStale(state) {
+    if (!state) return false;
+    if (state.stale === true) return true;
+    const sources = state.lastSuccessAt || {};
+    const now = Date.now();
+    const active = state.tomtomConfigured ? ['flow', 'incidents', 'weather'] : ['weather'];
+    return active.some((src) => {
+      const ts = sources[src];
+      if (!ts) return false;
+      return now - Date.parse(ts) > STALE_THRESHOLDS_MS[src];
+    });
+  }
+
   function renderStatusBar() {
     setupBanner.classList.toggle('hidden', Boolean(latestState.tomtomConfigured));
-    updatedText.textContent = formatRelativeTime(latestState.updatedAt);
+    if (latestState.tomtomConfigured === false && !usingOsmFallback) {
+      const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
+      if (baseLayer) map.removeLayer(baseLayer);
+      baseLayer = createBaseLayer(activeTheme, true).addTo(map);
+      baseLayer.bringToBack();
+    }
+
+    const isStale = isClientDetectedStale(latestState);
+    const sources = latestState.lastSuccessAt || {};
+    const summaryText = latestState.tomtomConfigured
+      ? `Flow ${formatShortAge(sources.flow)} · Inc ${formatShortAge(sources.incidents)} · Weather ${formatShortAge(sources.weather)}`
+      : `Weather ${formatShortAge(sources.weather)}`;
+
+    updatedText.textContent = latestState.updatedAt ? formatRelativeTime(latestState.updatedAt) : 'No live feed';
+    updatedText.title = summaryText;
+    liveIndicator.classList.toggle('stale', isStale || !latestState.updatedAt);
+    staleBadge.classList.toggle('hidden', !isStale);
+    staleBadge.title = summaryText;
+
+    sourcesFreshness.textContent = summaryText;
+    sourcesFreshness.classList.toggle('stale', isStale);
 
     if (latestState.weather) {
       weatherSep.classList.remove('hidden');

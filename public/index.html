@@ -112,10 +112,11 @@
 
   <div class="top-right-controls">
     <div class="status-pill" role="status">
-      <span class="live-indicator" aria-hidden="true"></span>
+      <span id="live-indicator" class="live-indicator" aria-hidden="true"></span>
       <span class="status-brand">Nagpur Live</span>
       <span class="status-sep" aria-hidden="true">&middot;</span>
       <span id="updated-text" class="status-muted">Connecting</span>
+      <span id="stale-badge" class="stale-badge hidden">Stale</span>
       <span id="weather-sep" class="status-sep hidden" aria-hidden="true">&middot;</span>
       <span id="weather-text" class="status-muted hidden"></span>
 
@@ -186,6 +187,11 @@
           <line x1="6" y1="6" x2="18" y2="18"></line>
         </svg>
       </button>
+    </div>
+
+    <div class="drawer-subbar">
+      <span class="estimate-note">Advisory model estimates</span>
+      <span id="sources-freshness" class="sources-freshness">Waiting for telemetry</span>
     </div>
 
     <div id="alerts-list" class="alerts-list">
