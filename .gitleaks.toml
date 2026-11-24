@@ -1,0 +1,11 @@
+title = "NGP Mobility Secret Scanning Policy"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore example placeholder values and test mock keys"
+paths = [
+  '''^\.env\.example$''',
+  '''^test/.*\.test\.js$'''
+]

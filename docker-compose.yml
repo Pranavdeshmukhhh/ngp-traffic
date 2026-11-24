@@ -1,0 +1,18 @@
+services:
+  ngp-mobility:
+    build:
+      context: .
+      args:
+        NODE_VERSION: 22-alpine
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped

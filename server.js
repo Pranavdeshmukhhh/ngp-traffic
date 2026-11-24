@@ -24,7 +24,6 @@ const {
   routeQuerySchema,
   redactSecrets,
   safeFetch,
-  getClientIp,
   createRateLimiter,
   UpstreamBudget,
   LatencyTracker
@@ -431,9 +430,22 @@ const upstreamBudget = new UpstreamBudget({
   tomtomTileLimit: activeConfig.dailyTomTomTileBudget
 });
 
+class HttpError extends Error {
+  /**
+   * @param {number} statusCode
+   * @param {string} message
+   */
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+const helmetMiddleware = /** @type {any} */ (helmet);
+
 app.disable('x-powered-by');
 app.use(
-  helmet({
+  helmetMiddleware({
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
@@ -799,9 +811,7 @@ app.get('/tiles/basemap/:z/:x/:y.png', tileLimiter, async (req, res) => {
       cacheKey,
       async () => {
         if (!upstreamBudget.tryConsume('tomtomTile', 1)) {
-          const err = new Error('Daily TomTom tile quota exceeded');
-          err.statusCode = 503;
-          throw err;
+          throw new HttpError(503, 'Daily TomTom tile quota exceeded');
         }
         const upstreamUrl =
           `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
@@ -810,9 +820,7 @@ app.get('/tiles/basemap/:z/:x/:y.png', tileLimiter, async (req, res) => {
         if (!upstream.ok) {
           const errText = redactKey(await upstream.text().catch(() => ''));
           console.warn('TomTom basemap tile error:', upstream.status, errText);
-          const err = new Error(`Upstream HTTP ${upstream.status}`);
-          err.statusCode = upstream.status === 404 ? 204 : 502;
-          throw err;
+          throw new HttpError(upstream.status === 404 ? 204 : 502, `Upstream HTTP ${upstream.status}`);
         }
         return Buffer.from(await upstream.arrayBuffer());
       },
@@ -850,9 +858,7 @@ app.get('/tiles/traffic/:z/:x/:y.png', tileLimiter, async (req, res) => {
       cacheKey,
       async () => {
         if (!upstreamBudget.tryConsume('tomtomTile', 1)) {
-          const err = new Error('Daily TomTom tile quota exceeded');
-          err.statusCode = 503;
-          throw err;
+          throw new HttpError(503, 'Daily TomTom tile quota exceeded');
         }
         const upstreamUrl =
           `https://api.tomtom.com/traffic/map/4/tile/flow/${style}/${z}/${x}/${y}.png` +
@@ -861,9 +867,7 @@ app.get('/tiles/traffic/:z/:x/:y.png', tileLimiter, async (req, res) => {
         if (!upstream.ok) {
           const errText = redactKey(await upstream.text().catch(() => ''));
           console.warn('TomTom tile error:', upstream.status, errText);
-          const err = new Error(`Upstream HTTP ${upstream.status}`);
-          err.statusCode = upstream.status === 404 ? 204 : 502;
-          throw err;
+          throw new HttpError(upstream.status === 404 ? 204 : 502, `Upstream HTTP ${upstream.status}`);
         }
         return Buffer.from(await upstream.arrayBuffer());
       },
@@ -1023,6 +1027,9 @@ function setupGracefulShutdown() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+/**
+ * @param {{ fetch?: typeof fetch, config?: Partial<ReturnType<typeof loadConfig>> }} [overrides]
+ */
 function setTestOverrides({ fetch: customFetch, config: customConfig } = {}) {
   if (customFetch) fetchImpl = customFetch;
   if (customConfig) activeConfig = { ...activeConfig, ...customConfig };
