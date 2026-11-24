@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Nagpur Live Traffic</title>
+  <title>NGP Mobility — Nagpur Live Traffic &amp; Road Risk</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -16,9 +16,9 @@
   <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
-  <div id="map" aria-label="Nagpur live traffic map"></div>
+  <div id="map" role="region" aria-label="Nagpur live traffic map"></div>
 
-  <div id="setup-banner" class="setup-banner hidden" role="status">
+  <div id="setup-banner" class="setup-banner hidden" role="status" aria-live="polite">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="10"></circle>
       <line x1="12" y1="8" x2="12" y2="12"></line>
@@ -27,6 +27,8 @@
     <span><code>TOMTOM_API_KEY</code> is not set. Add it to your environment to enable live traffic tiles, junction flow, place search, and routing.</span>
   </div>
 
+  <div id="road-risk-banner" class="road-risk-banner hidden" role="status" aria-live="polite"></div>
+
   <aside class="route-panel" aria-label="Route planner">
     <div class="route-header">
       <div class="route-title-row">
@@ -34,7 +36,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
           </svg>
-          <span>Nagpur Route</span>
+          <span id="route-title-label">Nagpur Route</span>
         </span>
         <button id="clear-route-btn" class="text-btn hidden" type="button">Clear</button>
       </div>
@@ -50,6 +52,8 @@
             placeholder="Origin or click map"
             autocomplete="off"
             aria-label="Origin"
+            aria-autocomplete="list"
+            aria-controls="origin-dropdown"
           />
           <div id="origin-dropdown" class="autocomplete-dropdown hidden" role="listbox"></div>
         </div>
@@ -64,6 +68,8 @@
             placeholder="Destination or click map"
             autocomplete="off"
             aria-label="Destination"
+            aria-autocomplete="list"
+            aria-controls="dest-dropdown"
           />
           <div id="dest-dropdown" class="autocomplete-dropdown hidden" role="listbox"></div>
         </div>
@@ -87,13 +93,15 @@
       <button class="chip" type="button" data-name="Dharampeth" data-lat="21.1489" data-lng="79.0738">Dharampeth</button>
     </div>
 
-    <div id="route-status" class="route-status hidden"></div>
+    <div id="route-status" class="route-status hidden" role="status" aria-live="polite"></div>
+
+    <div id="route-rain-warning" class="route-rain-warning hidden" role="alert"></div>
 
     <div id="route-cards" class="route-cards hidden">
       <button id="card-fastest" class="route-card active" type="button">
         <div class="route-card-head">
           <span class="route-swatch fastest-swatch"></span>
-          <span class="route-card-label">Fastest (Live)</span>
+          <span id="fastest-label" class="route-card-label">Fastest (Live)</span>
         </div>
         <div id="fastest-time" class="route-card-time">-- min</div>
         <div id="fastest-meta" class="route-card-meta">-- km</div>
@@ -102,7 +110,7 @@
       <button id="card-shortest" class="route-card" type="button">
         <div class="route-card-head">
           <span class="route-swatch shortest-swatch"></span>
-          <span class="route-card-label">Shortest</span>
+          <span id="shortest-label" class="route-card-label">Shortest</span>
         </div>
         <div id="shortest-time" class="route-card-time">-- min</div>
         <div id="shortest-meta" class="route-card-meta">-- km</div>
@@ -113,14 +121,22 @@
   <div class="top-right-controls">
     <div class="status-pill" role="status">
       <span id="live-indicator" class="live-indicator" aria-hidden="true"></span>
-      <span class="status-brand">Nagpur Live</span>
+      <span id="brand-live-label" class="status-brand">Nagpur Live</span>
       <span class="status-sep" aria-hidden="true">&middot;</span>
       <span id="updated-text" class="status-muted">Connecting</span>
       <span id="stale-badge" class="stale-badge hidden">Stale</span>
       <span id="weather-sep" class="status-sep hidden" aria-hidden="true">&middot;</span>
-      <span id="weather-text" class="status-muted hidden"></span>
+      <button id="weather-toggle-btn" class="weather-pill-btn hidden" type="button" aria-expanded="false" aria-controls="weather-panel">
+        <span id="weather-text" class="status-muted"></span>
+      </button>
 
       <div class="pill-actions">
+        <select id="lang-select" class="lang-select" aria-label="Language">
+          <option value="en">EN</option>
+          <option value="hi">हिं</option>
+          <option value="mr">मरा</option>
+        </select>
+
         <button id="theme-toggle" class="icon-btn" type="button" title="Toggle light/dark theme" aria-label="Toggle theme">
           <svg id="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
@@ -150,16 +166,35 @@
           <div id="layers-popover" class="layers-popover hidden" role="menu">
             <label class="layer-option">
               <input id="layer-flow" type="checkbox" checked />
-              <span>Traffic Flow</span>
+              <div class="layer-copy">
+                <span id="layer-flow-label">Traffic Flow</span>
+                <span id="layer-flow-meta" class="layer-meta">TomTom · waiting</span>
+              </div>
             </label>
             <label class="layer-option">
               <input id="layer-incidents" type="checkbox" />
-              <span>Incidents</span>
+              <div class="layer-copy">
+                <span id="layer-incidents-label">Incidents</span>
+                <span id="layer-incidents-meta" class="layer-meta">TomTom v5 · waiting</span>
+              </div>
             </label>
             <label class="layer-option">
               <input id="layer-alerts" type="checkbox" checked />
-              <span>Alerts</span>
+              <div class="layer-copy">
+                <span id="layer-alerts-label">Alerts</span>
+                <span id="layer-alerts-meta" class="layer-meta">Model estimate · waiting</span>
+              </div>
             </label>
+            <label class="layer-option">
+              <input id="layer-hotspots" type="checkbox" checked />
+              <div class="layer-copy">
+                <span id="layer-hotspots-label">Observed Rain Hotspots</span>
+                <span id="layer-hotspots-meta" class="layer-meta">Observed history · 0</span>
+              </div>
+            </label>
+            <div id="hotspots-empty-note" class="layer-empty-note">
+              No rain-induced waterlogging slowdowns observed in stored history yet.
+            </div>
           </div>
         </div>
 
@@ -168,17 +203,30 @@
             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
             <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
           </svg>
-          <span>Alerts</span>
+          <span id="alerts-open-label">Alerts</span>
           <span id="drawer-open-count" class="count-badge">0</span>
         </button>
       </div>
     </div>
+
+    <section id="weather-panel" class="weather-panel hidden" aria-label="Weather and air quality details">
+      <div class="weather-panel-head">
+        <h3 id="weather-panel-title">Nagpur Weather &amp; Air Quality</h3>
+        <button id="weather-close-btn" class="icon-btn" type="button" aria-label="Close weather panel">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div id="weather-panel-body" class="weather-panel-body"></div>
+    </section>
   </div>
 
   <aside id="alerts-drawer" class="alerts-drawer" aria-label="Live traffic alerts">
     <div class="drawer-header">
       <div class="drawer-title-group">
-        <h2>Live Alerts</h2>
+        <h2 id="live-alerts-title">Live Alerts</h2>
         <span id="alerts-count" class="count-badge">0</span>
       </div>
       <button id="drawer-close-btn" class="icon-btn" type="button" title="Collapse alerts" aria-label="Collapse alerts">
@@ -190,7 +238,7 @@
     </div>
 
     <div class="drawer-subbar">
-      <span class="estimate-note">Advisory model estimates</span>
+      <span id="estimate-note-label" class="estimate-note">Advisory model estimates</span>
       <span id="sources-freshness" class="sources-freshness">Waiting for telemetry</span>
     </div>
 
@@ -202,11 +250,12 @@
   </aside>
 
   <div class="traffic-legend" aria-label="Live traffic legend">
-    <span class="legend-title">Live Traffic</span>
-    <span class="legend-item"><span class="legend-bar fast"></span>Fast</span>
-    <span class="legend-item"><span class="legend-bar moderate"></span>Moderate</span>
-    <span class="legend-item"><span class="legend-bar slow"></span>Slow</span>
-    <span class="legend-item"><span class="legend-bar closed"></span>Closed</span>
+    <span id="legend-title-label" class="legend-title">Live Traffic</span>
+    <span class="legend-item"><span class="legend-bar fast"></span><span id="legend-fast">Fast</span></span>
+    <span class="legend-item"><span class="legend-bar moderate"></span><span id="legend-moderate">Moderate</span></span>
+    <span class="legend-item"><span class="legend-bar slow"></span><span id="legend-slow">Slow</span></span>
+    <span class="legend-item"><span class="legend-bar closed"></span><span id="legend-closed">Closed</span></span>
+    <span class="legend-item"><span class="legend-dot-hotspot"></span><span id="legend-hotspot">Observed Hotspot</span></span>
   </div>
 
   <script
@@ -215,6 +264,7 @@
     crossorigin=""
   ></script>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/i18n.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

@@ -28,9 +28,19 @@ const {
   UpstreamBudget,
   LatencyTracker
 } = require('./src/security');
+const {
+  AIR_QUALITY_POLL_INTERVAL_MS,
+  AIR_QUALITY_STALE_MS,
+  HotspotObservationStore,
+  parseForecastResponse,
+  parseAirQualityResponse,
+  computeRoadRiskAdvisories,
+  findRouteHotspotWarnings
+} = require('./src/weather-risk');
 
 let activeConfig = loadConfig();
 let fetchImpl = globalThis.fetch;
+let hotspotStore = new HotspotObservationStore();
 
 const PORT = activeConfig.port;
 const NAGPUR_CENTER = { lat: 21.1458, lng: 79.0882 };
@@ -315,16 +325,22 @@ async function fetchWeather() {
   upstreamBudget.tryConsume('openMeteo', 1);
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${NAGPUR_CENTER.lat}` +
-    `&longitude=${NAGPUR_CENTER.lng}&current=temperature_2m,precipitation,weather_code`;
+    `&longitude=${NAGPUR_CENTER.lng}` +
+    `&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m` +
+    `&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,visibility,wind_speed_10m,weather_code` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,precipitation_sum,precipitation_probability_max,wind_speed_10m_max` +
+    `&timezone=Asia%2FKolkata&forecast_days=7`;
   const data = await fetchJson(url);
-  const current = data?.current || {};
-  return {
-    temperatureC: Math.round(Number(current.temperature_2m ?? 0)),
-    precipitation: Number(current.precipitation ?? 0),
-    weatherCode: Number(current.weather_code ?? 0),
-    condition: describeWeatherCode(current.weather_code ?? 0),
-    updatedAt: new Date().toISOString()
-  };
+  return parseForecastResponse(data, describeWeatherCode);
+}
+
+async function fetchAirQuality() {
+  upstreamBudget.tryConsume('openMeteo', 1);
+  const url =
+    `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${NAGPUR_CENTER.lat}` +
+    `&longitude=${NAGPUR_CENTER.lng}&current=pm2_5,pm10,us_aqi,european_aqi&timezone=Asia%2FKolkata`;
+  const data = await fetchJson(url);
+  return parseAirQualityResponse(data);
 }
 
 async function fetchJunctionFlow(junction) {
@@ -504,12 +520,20 @@ const liveState = {
   lastSuccessAt: {
     flow: null,
     incidents: null,
-    weather: null
+    weather: null,
+    airQuality: null
   },
   stale: false,
   staleSources: [],
+  features: {
+    weatherRisk: activeConfig.featureWeatherRisk
+  },
   tomtomConfigured: Boolean(getTomTomKey()),
   weather: null,
+  weatherExtended: null,
+  airQuality: null,
+  roadRiskAdvisories: [],
+  observedHotspots: [],
   junctions: [],
   incidents: [],
   predictions: []
@@ -518,12 +542,14 @@ const liveState = {
 const lastAttemptFailed = {
   flow: false,
   incidents: false,
-  weather: false
+  weather: false,
+  airQuality: false
 };
 let hasAttemptedRefresh = false;
 let lastFlowFetchMs = 0;
 let lastIncidentsFetchMs = 0;
 let lastWeatherFetchMs = 0;
+let lastAirQualityFetchMs = 0;
 let refreshInFlight = null;
 
 /**
@@ -558,12 +584,15 @@ function computeFreshness({
   lastAttemptFailed: failedMap,
   tomtomConfigured,
   hasAttemptedRefresh: attempted,
+  trackAirQuality = false,
   nowMs = Date.now()
 }) {
+  /** @type {{ flow: string | null, incidents: string | null, weather: string | null, airQuality: string | null }} */
   const normalized = {
     flow: lastSuccessAt?.flow || null,
     incidents: lastSuccessAt?.incidents || null,
-    weather: lastSuccessAt?.weather || null
+    weather: lastSuccessAt?.weather || null,
+    airQuality: lastSuccessAt?.airQuality || null
   };
 
   let updatedAt = null;
@@ -578,15 +607,18 @@ function computeFreshness({
   }
 
   const activeSources = tomtomConfigured ? ['flow', 'incidents', 'weather'] : ['weather'];
+  if (trackAirQuality) activeSources.push('airQuality');
+
   const thresholds = {
     flow: FLOW_STALE_MS,
     incidents: INCIDENTS_STALE_MS,
-    weather: WEATHER_STALE_MS
+    weather: WEATHER_STALE_MS,
+    airQuality: AIR_QUALITY_STALE_MS
   };
   const staleSources = [];
 
   for (const src of activeSources) {
-    const ts = normalized[src];
+    const ts = normalized[src] || null;
     const failed = Boolean(failedMap?.[src]);
     const expired = ts !== null && nowMs - Date.parse(ts) > thresholds[src];
     const missingAfterAttempt = Boolean(attempted) && ts === null;
@@ -595,9 +627,18 @@ function computeFreshness({
     }
   }
 
+  const publicLastSuccess = {
+    flow: normalized.flow,
+    incidents: normalized.incidents,
+    weather: normalized.weather
+  };
+  if (trackAirQuality || lastSuccessAt?.airQuality !== undefined) {
+    publicLastSuccess.airQuality = normalized.airQuality;
+  }
+
   return {
     updatedAt,
-    lastSuccessAt: normalized,
+    lastSuccessAt: publicLastSuccess,
     stale: staleSources.length > 0,
     staleSources
   };
@@ -609,12 +650,19 @@ function getLiveStateSnapshot(nowMs = Date.now()) {
     lastAttemptFailed,
     tomtomConfigured: Boolean(getTomTomKey()),
     hasAttemptedRefresh,
+    trackAirQuality: activeConfig.featureWeatherRisk,
     nowMs
   });
   liveState.updatedAt = freshness.updatedAt;
-  liveState.lastSuccessAt = freshness.lastSuccessAt;
+  liveState.lastSuccessAt = {
+    flow: freshness.lastSuccessAt.flow,
+    incidents: freshness.lastSuccessAt.incidents,
+    weather: freshness.lastSuccessAt.weather,
+    airQuality: freshness.lastSuccessAt.airQuality ?? null
+  };
   liveState.stale = freshness.stale;
   liveState.staleSources = freshness.staleSources;
+  liveState.features = { weatherRisk: activeConfig.featureWeatherRisk };
   liveState.tomtomConfigured = Boolean(getTomTomKey());
   return liveState;
 }
@@ -626,10 +674,27 @@ function recomputePredictions() {
     liveState.weather,
     stations
   );
+  if (activeConfig.featureWeatherRisk) {
+    liveState.observedHotspots = hotspotStore.getObservedHotspots(monitoredJunctions);
+    liveState.roadRiskAdvisories = computeRoadRiskAdvisories(
+      liveState.weatherExtended,
+      liveState.airQuality,
+      liveState.junctions
+    );
+  } else {
+    liveState.observedHotspots = [];
+    liveState.roadRiskAdvisories = [];
+  }
+  liveState.features = { weatherRisk: activeConfig.featureWeatherRisk };
   liveState.tomtomConfigured = Boolean(getTomTomKey());
 }
 
-async function refreshLiveState({ forceFlow = false, forceIncidents = false, forceWeather = false } = {}) {
+async function refreshLiveState({
+  forceFlow = false,
+  forceIncidents = false,
+  forceWeather = false,
+  forceAirQuality = false
+} = {}) {
   if (refreshInFlight) return refreshInFlight;
 
   refreshInFlight = (async () => {
@@ -637,12 +702,22 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
     const tasks = [];
     const hasKey = Boolean(getTomTomKey());
 
-    if (forceWeather || now - lastWeatherFetchMs >= WEATHER_POLL_INTERVAL_MS || !liveState.weather) {
+    if (
+      activeConfig.featureWeatherRisk &&
+      (forceWeather || now - lastWeatherFetchMs >= WEATHER_POLL_INTERVAL_MS || !liveState.weather)
+    ) {
       tasks.push(
         fetchWeather()
-          .then((w) => {
+          .then((ext) => {
             const ts = Date.now();
-            liveState.weather = w;
+            liveState.weatherExtended = ext;
+            liveState.weather = {
+              temperatureC: ext.current.temperatureC,
+              precipitation: ext.current.precipitationMm,
+              weatherCode: ext.current.weatherCode,
+              condition: ext.current.condition,
+              updatedAt: ext.current.updatedAt
+            };
             lastWeatherFetchMs = ts;
             liveState.lastSuccessAt.weather = new Date(ts).toISOString();
             lastAttemptFailed.weather = false;
@@ -650,6 +725,28 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
           .catch((err) => {
             lastAttemptFailed.weather = true;
             console.warn('Weather fetch failed:', redactKey(err.message));
+          })
+      );
+    }
+
+    if (
+      activeConfig.featureWeatherRisk &&
+      (forceAirQuality ||
+        now - lastAirQualityFetchMs >= AIR_QUALITY_POLL_INTERVAL_MS ||
+        !liveState.airQuality)
+    ) {
+      tasks.push(
+        fetchAirQuality()
+          .then((aq) => {
+            const ts = Date.now();
+            liveState.airQuality = aq;
+            lastAirQualityFetchMs = ts;
+            liveState.lastSuccessAt.airQuality = new Date(ts).toISOString();
+            lastAttemptFailed.airQuality = false;
+          })
+          .catch((err) => {
+            lastAttemptFailed.airQuality = true;
+            console.warn('Air quality fetch failed:', redactKey(err.message));
           })
       );
     }
@@ -668,6 +765,13 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
                 list.push(flow.congestionPct);
                 if (list.length > HISTORY_LIMIT) list.shift();
                 junctionHistory.set(flow.id, list);
+              }
+              if (activeConfig.featureWeatherRisk) {
+                hotspotStore.recordSnapshot(
+                  flows,
+                  Number(liveState.weather?.precipitation ?? 0),
+                  new Date(ts).toISOString()
+                );
               }
               liveState.junctions = flows;
               lastFlowFetchMs = ts;
@@ -745,16 +849,22 @@ io.on('connection', (socket) => {
     hasKey &&
     (!liveState.lastSuccessAt.flow || Date.now() - lastFlowFetchMs > FLOW_POLL_INTERVAL_MS);
   const shouldRefreshWeather =
-    !liveState.lastSuccessAt.weather || Date.now() - lastWeatherFetchMs > WEATHER_POLL_INTERVAL_MS;
+    activeConfig.featureWeatherRisk &&
+    (!liveState.lastSuccessAt.weather || Date.now() - lastWeatherFetchMs > WEATHER_POLL_INTERVAL_MS);
+  const shouldRefreshAirQuality =
+    activeConfig.featureWeatherRisk &&
+    (!liveState.lastSuccessAt.airQuality ||
+      Date.now() - lastAirQualityFetchMs > AIR_QUALITY_POLL_INTERVAL_MS);
   const shouldRefreshIncidents =
     hasKey &&
     (!liveState.lastSuccessAt.incidents ||
       Date.now() - lastIncidentsFetchMs > INCIDENTS_POLL_INTERVAL_MS);
 
-  if (shouldRefreshFlow || shouldRefreshWeather || shouldRefreshIncidents) {
+  if (shouldRefreshFlow || shouldRefreshWeather || shouldRefreshAirQuality || shouldRefreshIncidents) {
     refreshLiveState({
       forceFlow: shouldRefreshFlow,
       forceWeather: shouldRefreshWeather,
+      forceAirQuality: shouldRefreshAirQuality,
       forceIncidents: shouldRefreshIncidents
     });
   }
@@ -762,6 +872,7 @@ io.on('connection', (socket) => {
 
 // ── Rate Limiters ──
 const healthLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: 'health' });
+const weatherLimiter = createRateLimiter({ windowMs: 60_000, max: 30, name: 'weather' });
 const tileLimiter = createRateLimiter({ windowMs: 60_000, max: 300, name: 'tiles' });
 const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 40, name: 'search' });
 const routeLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'route' });
@@ -772,6 +883,7 @@ app.get('/api/health', healthLimiter, (_req, res) => {
   res.json({
     status: 'ok',
     tomtomConfigured: Boolean(getTomTomKey()),
+    features: snap.features,
     updatedAt: snap.updatedAt,
     lastSuccessAt: snap.lastSuccessAt,
     stale: snap.stale,
@@ -779,6 +891,7 @@ app.get('/api/health', healthLimiter, (_req, res) => {
     activeClients: io.engine.clientsCount,
     monitoredJunctions: monitoredJunctions.length,
     alertsCount: snap.predictions.length,
+    observedHotspotsCount: snap.observedHotspots.length,
     weatherLoaded: Boolean(snap.weather),
     metrics: {
       p95LatencyMs: latencyTracker.p95Ms(),
@@ -786,6 +899,27 @@ app.get('/api/health', healthLimiter, (_req, res) => {
       basemapTileCache: basemapTileCache.stats(),
       upstreamToday: upstreamBudget.snapshot()
     }
+  });
+});
+
+app.get('/api/weather', weatherLimiter, (_req, res) => {
+  if (!activeConfig.featureWeatherRisk) {
+    return res.json({
+      enabled: false,
+      message: 'Weather & road-risk module disabled by feature flag'
+    });
+  }
+  const snap = getLiveStateSnapshot();
+  return res.json({
+    enabled: true,
+    updatedAt: snap.updatedAt,
+    stale: snap.stale,
+    staleSources: snap.staleSources,
+    lastSuccessAt: snap.lastSuccessAt,
+    weather: snap.weatherExtended,
+    airQuality: snap.airQuality,
+    roadRiskAdvisories: snap.roadRiskAdvisories,
+    observedHotspots: snap.observedHotspots
   });
 });
 
@@ -985,6 +1119,21 @@ app.get('/api/route', routeLimiter, async (req, res) => {
       fetchTomTomRoute(fromLat, fromLng, toLat, toLng, 'fastest'),
       fetchTomTomRoute(fromLat, fromLng, toLat, toLng, 'shortest')
     ]);
+    if (activeConfig.featureWeatherRisk) {
+      const hotspots = hotspotStore.getObservedHotspots(monitoredJunctions);
+      fastest.rainWarnings = findRouteHotspotWarnings(
+        fastest.coordinates,
+        hotspots,
+        liveState.weatherExtended,
+        haversineMeters
+      );
+      shortest.rainWarnings = findRouteHotspotWarnings(
+        shortest.coordinates,
+        hotspots,
+        liveState.weatherExtended,
+        haversineMeters
+      );
+    }
     return res.json({ fastest, shortest });
   } catch (err) {
     console.warn('Routing failed:', redactKey(err.message));
@@ -1007,10 +1156,15 @@ function startPollingLoops() {
       }
     }, INCIDENTS_POLL_INTERVAL_MS),
     setInterval(() => {
-      if (io.engine.clientsCount > 0) {
+      if (io.engine.clientsCount > 0 && activeConfig.featureWeatherRisk) {
         refreshLiveState({ forceWeather: true });
       }
-    }, WEATHER_POLL_INTERVAL_MS)
+    }, WEATHER_POLL_INTERVAL_MS),
+    setInterval(() => {
+      if (io.engine.clientsCount > 0 && activeConfig.featureWeatherRisk) {
+        refreshLiveState({ forceAirQuality: true });
+      }
+    }, AIR_QUALITY_POLL_INTERVAL_MS)
   );
 }
 
@@ -1028,11 +1182,12 @@ function setupGracefulShutdown() {
 }
 
 /**
- * @param {{ fetch?: typeof fetch, config?: Partial<ReturnType<typeof loadConfig>> }} [overrides]
+ * @param {{ fetch?: typeof fetch, config?: Partial<ReturnType<typeof loadConfig>>, hotspotStore?: InstanceType<typeof HotspotObservationStore> }} [overrides]
  */
-function setTestOverrides({ fetch: customFetch, config: customConfig } = {}) {
+function setTestOverrides({ fetch: customFetch, config: customConfig, hotspotStore: customStore } = {}) {
   if (customFetch) fetchImpl = customFetch;
   if (customConfig) activeConfig = { ...activeConfig, ...customConfig };
+  if (customStore) hotspotStore = customStore;
 }
 
 function resetStateForTests() {
@@ -1043,26 +1198,34 @@ function resetStateForTests() {
   upstreamBudget.reset();
   latencyTracker.reset();
   healthLimiter.reset();
+  weatherLimiter.reset();
   tileLimiter.reset();
   searchLimiter.reset();
   routeLimiter.reset();
   junctionHistory.clear();
   liveState.updatedAt = null;
-  liveState.lastSuccessAt = { flow: null, incidents: null, weather: null };
+  liveState.lastSuccessAt = { flow: null, incidents: null, weather: null, airQuality: null };
   liveState.stale = false;
   liveState.staleSources = [];
+  liveState.features = { weatherRisk: activeConfig.featureWeatherRisk };
   liveState.tomtomConfigured = Boolean(getTomTomKey());
   liveState.weather = null;
+  liveState.weatherExtended = null;
+  liveState.airQuality = null;
+  liveState.roadRiskAdvisories = [];
+  liveState.observedHotspots = [];
   liveState.junctions = [];
   liveState.incidents = [];
   liveState.predictions = [];
   lastAttemptFailed.flow = false;
   lastAttemptFailed.incidents = false;
   lastAttemptFailed.weather = false;
+  lastAttemptFailed.airQuality = false;
   hasAttemptedRefresh = false;
   lastFlowFetchMs = 0;
   lastIncidentsFetchMs = 0;
   lastWeatherFetchMs = 0;
+  lastAirQualityFetchMs = 0;
 }
 
 if (require.main === module) {
@@ -1089,6 +1252,7 @@ module.exports = {
   extractIncidentPoint,
   setTestOverrides,
   resetStateForTests,
+  refreshLiveState,
   upstreamBudget,
   tileCache,
   basemapTileCache
