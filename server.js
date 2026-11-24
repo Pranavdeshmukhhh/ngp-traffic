@@ -1,589 +1,666 @@
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
+'use strict';
+
+try {
+  if (typeof process.loadEnvFile === 'function') {
+    process.loadEnvFile();
+  }
+} catch (_) {
+  // .env is optional; environment variables may be injected directly.
+}
+
 const fs = require('fs');
 const http = require('http');
-const crypto = require('crypto');
+const path = require('path');
+const express = require('express');
+const cors = require('cors');
 const { Server } = require('socket.io');
-const { RandomForest, extractFeatures, FEATURE_NAMES } = require('./ml-engine');
-const routing = require('./routing-engine');
 
+const PORT = Number(process.env.PORT) || 3000;
+const TOMTOM_API_KEY = (process.env.TOMTOM_API_KEY || '').trim();
+const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || '*').trim() || '*';
+
+const NAGPUR_CENTER = { lat: 21.1458, lng: 79.0882 };
+const NAGPUR_BBOX = '78.95,21.05,79.20,21.25';
+
+const TILE_CACHE_TTL_MS = 120 * 1000;
+const TILE_CACHE_MAX_ENTRIES = 500;
+const FLOW_POLL_INTERVAL_MS = 4 * 60 * 1000;
+const INCIDENTS_POLL_INTERVAL_MS = 12 * 60 * 1000;
+const WEATHER_POLL_INTERVAL_MS = 15 * 60 * 1000;
+const UPSTREAM_TIMEOUT_MS = 8000;
+
+const ROADWORKS_OR_CLOSURE_CODES = new Set([7, 8, 9]);
+const ACCIDENT_OR_BREAKDOWN_CODES = new Set([1, 14]);
+
+const junctions = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'data', 'nagpur-junctions.json'), 'utf8')
+);
+const stations = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'data', 'police-stations.json'), 'utf8')
+);
+const monitoredJunctions = junctions.filter((j) => j.key === true);
+
+/**
+ * Compute great-circle distance in meters between two WGS84 coordinates.
+ */
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+/**
+ * Find the nearest Nagpur police station to a coordinate.
+ */
+function findNearestPoliceStation(lat, lng, stationList) {
+  if (!Array.isArray(stationList) || stationList.length === 0) return null;
+  let best = null;
+  let bestDist = Infinity;
+
+  for (const s of stationList) {
+    if (!Number.isFinite(s.lat) || !Number.isFinite(s.lng)) continue;
+    const d = haversineMeters(lat, lng, s.lat, s.lng);
+    if (d < bestDist) {
+      bestDist = d;
+      best = s;
+    }
+  }
+
+  if (!best) return null;
+  return {
+    id: best.id,
+    name: best.name,
+    shortName: best.name.replace(/Police Station/i, 'PS').trim(),
+    zone: best.zone,
+    lat: best.lat,
+    lng: best.lng,
+    distanceKm: Math.round((bestDist / 1000) * 10) / 10
+  };
+}
+
+/**
+ * Map Open-Meteo WMO weather codes to concise labels.
+ */
+function describeWeatherCode(code) {
+  const c = Number(code);
+  if (c === 0) return 'Clear';
+  if (c === 1 || c === 2) return 'Partly Cloudy';
+  if (c === 3) return 'Overcast';
+  if (c === 45 || c === 48) return 'Fog';
+  if (c >= 51 && c <= 57) return 'Drizzle';
+  if ((c >= 61 && c <= 67) || (c >= 71 && c <= 77)) return 'Rain';
+  if (c >= 80 && c <= 82) return 'Showers';
+  if (c >= 95) return 'Thunderstorm';
+  return 'Clear';
+}
+
+/**
+ * Extract a representative { lat, lng } from GeoJSON Point or LineString geometry.
+ */
+function extractIncidentPoint(geometry) {
+  if (!geometry || !Array.isArray(geometry.coordinates)) return null;
+  if (geometry.type === 'Point' && geometry.coordinates.length >= 2) {
+    const [lng, lat] = geometry.coordinates;
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  }
+  if (geometry.type === 'LineString' && geometry.coordinates.length > 0) {
+    const mid = geometry.coordinates[Math.floor(geometry.coordinates.length / 2)];
+    if (Array.isArray(mid) && mid.length >= 2) {
+      const [lng, lat] = mid;
+      if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+    }
+  }
+  return null;
+}
+
+/**
+ * Predict officer and road-clearing deployment advisories from live flow,
+ * active incidents, rainfall, and Nagpur police station locations.
+ */
+function predictDeployments(junctionFlows, incidents, weather, stationList) {
+  if (!Array.isArray(junctionFlows) || junctionFlows.length === 0) return [];
+
+  const activeIncidents = Array.isArray(incidents) ? incidents : [];
+  const rainfallMm = Number(weather?.precipitation || 0);
+  const predictions = [];
+
+  for (const j of junctionFlows) {
+    if (!j || !Number.isFinite(j.lat) || !Number.isFinite(j.lng)) continue;
+
+    const currentSpeed = Math.max(0, Number(j.currentSpeed ?? 0));
+    const freeFlowSpeed = Math.max(1, Number(j.freeFlowSpeed ?? 1));
+    const congestionPct = Math.max(
+      0,
+      Math.min(100, Math.round((1 - Math.min(1, currentSpeed / freeFlowSpeed)) * 100))
+    );
+
+    const nearbyIncidents = activeIncidents.filter((inc) => {
+      if (!Number.isFinite(inc?.lat) || !Number.isFinite(inc?.lng)) return false;
+      return haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= 500;
+    });
+
+    const clearingIncident = nearbyIncidents.find((inc) =>
+      ROADWORKS_OR_CLOSURE_CODES.has(Number(inc.iconCategory))
+    );
+    const officerIncident = nearbyIncidents.find((inc) =>
+      ACCIDENT_OR_BREAKDOWN_CODES.has(Number(inc.iconCategory))
+    );
+
+    let severity = null;
+    let category = null;
+    let badge = null;
+    let action = null;
+    let reason = null;
+
+    if (
+      j.roadClosure === true ||
+      Boolean(clearingIncident) ||
+      (rainfallMm >= 5 && congestionPct >= 50)
+    ) {
+      severity = 'HIGH';
+      category = 'clearing';
+      badge = 'Clearing Needed';
+      action = 'Road Clearing Needed';
+      if (j.roadClosure === true) {
+        reason = 'Active road closure reported on corridor';
+      } else if (clearingIncident) {
+        reason = clearingIncident.description || 'Roadworks or lane closure within 500 m';
+      } else {
+        reason = `Heavy rain (${rainfallMm.toFixed(1)} mm/hr) with ${congestionPct}% congestion`;
+      }
+    } else if (Boolean(officerIncident) || congestionPct >= 60) {
+      severity = 'HIGH';
+      category = 'officer';
+      badge = 'Officer Needed';
+      action = 'Traffic Officer Needed';
+      if (officerIncident) {
+        reason = officerIncident.description || 'Accident or breakdown within 500 m';
+      } else {
+        reason = `Severe congestion (${congestionPct}% below free-flow speed)`;
+      }
+    } else if (congestionPct >= 40) {
+      severity = 'MEDIUM';
+      category = 'monitor';
+      badge = 'Monitor';
+      action = 'Standby / Monitor';
+      reason = `Moderate slowdown (${congestionPct}% below free-flow speed)`;
+    }
+
+    if (!severity) continue;
+
+    const entry = {
+      id: j.id,
+      name: j.name,
+      lat: j.lat,
+      lng: j.lng,
+      roadType: j.roadType || 'major_intersection',
+      currentSpeed: Math.round(currentSpeed),
+      freeFlowSpeed: Math.round(freeFlowSpeed),
+      congestionPct,
+      roadClosure: Boolean(j.roadClosure),
+      severity,
+      category,
+      badge,
+      action,
+      reason,
+      nearestStation:
+        severity === 'HIGH' ? findNearestPoliceStation(j.lat, j.lng, stationList) : null
+    };
+
+    predictions.push(entry);
+  }
+
+  predictions.sort((a, b) => {
+    if (a.severity !== b.severity) return a.severity === 'HIGH' ? -1 : 1;
+    return b.congestionPct - a.congestionPct;
+  });
+
+  return predictions;
+}
+
+// ── Upstream Fetchers ──
+async function fetchJson(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+  if (!res.ok) {
+    throw new Error(`Upstream HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function fetchWeather() {
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${NAGPUR_CENTER.lat}` +
+    `&longitude=${NAGPUR_CENTER.lng}&current=temperature_2m,precipitation,weather_code`;
+  const data = await fetchJson(url);
+  const current = data?.current || {};
+  return {
+    temperatureC: Math.round(Number(current.temperature_2m ?? 0)),
+    precipitation: Number(current.precipitation ?? 0),
+    weatherCode: Number(current.weather_code ?? 0),
+    condition: describeWeatherCode(current.weather_code ?? 0),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function fetchJunctionFlow(junction) {
+  const url =
+    `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json` +
+    `?point=${junction.lat},${junction.lng}&unit=KMPH&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
+  const data = await fetchJson(url);
+  const seg = data?.flowSegmentData;
+  if (!seg) return null;
+
+  const currentSpeed = Math.max(0, Number(seg.currentSpeed ?? 0));
+  const freeFlowSpeed = Math.max(1, Number(seg.freeFlowSpeed ?? 1));
+  const congestionPct = Math.max(
+    0,
+    Math.min(100, Math.round((1 - Math.min(1, currentSpeed / freeFlowSpeed)) * 100))
+  );
+
+  return {
+    id: junction.id,
+    name: junction.name,
+    lat: junction.lat,
+    lng: junction.lng,
+    roadType: junction.roadType,
+    currentSpeed: Math.round(currentSpeed),
+    freeFlowSpeed: Math.round(freeFlowSpeed),
+    currentTravelTime: Number(seg.currentTravelTime ?? 0),
+    freeFlowTravelTime: Number(seg.freeFlowTravelTime ?? 0),
+    confidence: Number(seg.confidence ?? 0),
+    roadClosure: Boolean(seg.roadClosure),
+    congestionPct
+  };
+}
+
+async function fetchAllJunctionFlows() {
+  if (!TOMTOM_API_KEY) return [];
+  const results = [];
+  const batchSize = 4;
+
+  for (let i = 0; i < monitoredJunctions.length; i += batchSize) {
+    const batch = monitoredJunctions.slice(i, i + batchSize);
+    const settled = await Promise.allSettled(batch.map((j) => fetchJunctionFlow(j)));
+    for (const item of settled) {
+      if (item.status === 'fulfilled' && item.value) {
+        results.push(item.value);
+      }
+    }
+  }
+  return results;
+}
+
+async function fetchIncidents() {
+  if (!TOMTOM_API_KEY) return [];
+  const fields = encodeURIComponent(
+    '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code},startTime,endTime,from,to,length,delay,roadNumbers}}}'
+  );
+  const url =
+    `https://api.tomtom.com/traffic/services/5/incidentDetails` +
+    `?key=${encodeURIComponent(TOMTOM_API_KEY)}` +
+    `&bbox=${NAGPUR_BBOX}&fields=${fields}&language=en-GB&timeValidityFilter=present`;
+
+  const data = await fetchJson(url);
+  const list = Array.isArray(data?.incidents) ? data.incidents : [];
+
+  return list
+    .map((raw, idx) => {
+      const point = extractIncidentPoint(raw.geometry);
+      if (!point) return null;
+      const props = raw.properties || {};
+      const firstEvent = Array.isArray(props.events) && props.events[0] ? props.events[0] : {};
+      return {
+        id: props.id || `inc_${idx}`,
+        lat: point.lat,
+        lng: point.lng,
+        iconCategory: Number(props.iconCategory ?? 0),
+        magnitudeOfDelay: Number(props.magnitudeOfDelay ?? 0),
+        description: firstEvent.description || 'Traffic incident',
+        from: props.from || '',
+        to: props.to || '',
+        delaySec: Number(props.delay ?? 0),
+        lengthMeters: Number(props.length ?? 0),
+        roadNumbers: Array.isArray(props.roadNumbers) ? props.roadNumbers : []
+      };
+    })
+    .filter(Boolean);
+}
+
+// ── Express & Socket.IO Setup ──
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
-const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json({ limit: '5mb' })); // larger limit for photo uploads
-app.use(express.static(path.join(__dirname, 'public'), {
-  setHeaders: function (res, filePath) {
-    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  }
-}));
+const corsOrigin = ALLOWED_ORIGIN === '*' ? '*' : ALLOWED_ORIGIN.split(',').map((s) => s.trim());
+app.use(cors({ origin: corsOrigin }));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Load data
-const junctions = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'nagpur-junctions.json'), 'utf8'));
-const stations = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'police-stations.json'), 'utf8'));
-const officers = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'officers.json'), 'utf8'));
-const presetIncidents = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'preset-incidents.json'), 'utf8'));
-const roadSegments = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'road-segments.json'), 'utf8'));
-const officerCredentials = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'officer-credentials.json'), 'utf8'));
+const io = new Server(server, {
+  cors: { origin: corsOrigin, methods: ['GET'] }
+});
 
-let activeIncidents = [];
-let manualOverrides = {};
-let officerStatuses = {};
+// ── Live State & Bounded Tile Cache ──
+const tileCache = new Map();
+const liveState = {
+  updatedAt: null,
+  tomtomConfigured: Boolean(TOMTOM_API_KEY),
+  weather: null,
+  junctions: [],
+  incidents: [],
+  predictions: []
+};
 
-// === AUTH SECRET ===
-const AUTH_SECRET = crypto.randomBytes(32).toString('hex');
+let lastFlowFetchMs = 0;
+let lastIncidentsFetchMs = 0;
+let lastWeatherFetchMs = 0;
+let refreshInFlight = null;
 
-function createToken(officerId, badgeNumber) {
-  var payload = JSON.stringify({ officerId: officerId, badge: badgeNumber, iat: Date.now() });
-  var sig = crypto.createHmac('sha256', AUTH_SECRET).update(payload).digest('hex');
-  return Buffer.from(payload).toString('base64') + '.' + sig;
+function recomputePredictions() {
+  liveState.predictions = predictDeployments(
+    liveState.junctions,
+    liveState.incidents,
+    liveState.weather,
+    stations
+  );
+  liveState.tomtomConfigured = Boolean(TOMTOM_API_KEY);
 }
 
-function verifyToken(token) {
-  if (!token) return null;
-  var parts = token.split('.');
-  if (parts.length !== 2) return null;
+async function refreshLiveState({ forceFlow = false, forceIncidents = false, forceWeather = false } = {}) {
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    const now = Date.now();
+    const tasks = [];
+
+    if (forceWeather || now - lastWeatherFetchMs >= WEATHER_POLL_INTERVAL_MS || !liveState.weather) {
+      tasks.push(
+        fetchWeather()
+          .then((w) => {
+            liveState.weather = w;
+            lastWeatherFetchMs = Date.now();
+          })
+          .catch((err) => {
+            console.warn('Weather fetch failed:', err.message);
+          })
+      );
+    }
+
+    if (
+      TOMTOM_API_KEY &&
+      (forceFlow || now - lastFlowFetchMs >= FLOW_POLL_INTERVAL_MS || liveState.junctions.length === 0)
+    ) {
+      tasks.push(
+        fetchAllJunctionFlows()
+          .then((flows) => {
+            if (flows.length > 0) {
+              liveState.junctions = flows;
+              lastFlowFetchMs = Date.now();
+            }
+          })
+          .catch((err) => {
+            console.warn('Flow fetch failed:', err.message);
+          })
+      );
+    }
+
+    if (
+      TOMTOM_API_KEY &&
+      (forceIncidents || now - lastIncidentsFetchMs >= INCIDENTS_POLL_INTERVAL_MS)
+    ) {
+      tasks.push(
+        fetchIncidents()
+          .then((incs) => {
+            liveState.incidents = incs;
+            lastIncidentsFetchMs = Date.now();
+          })
+          .catch((err) => {
+            console.warn('Incidents fetch failed:', err.message);
+          })
+      );
+    }
+
+    if (tasks.length === 0) return liveState;
+
+    await Promise.all(tasks);
+    liveState.updatedAt = new Date().toISOString();
+    recomputePredictions();
+    io.emit('traffic:state', liveState);
+    return liveState;
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+
+  return refreshInFlight;
+}
+
+// ── Socket.IO Lifecycle ──
+io.on('connection', (socket) => {
+  socket.emit('traffic:state', liveState);
+
+  const stale =
+    !liveState.updatedAt ||
+    Date.now() - new Date(liveState.updatedAt).getTime() > FLOW_POLL_INTERVAL_MS;
+  if (stale) {
+    refreshLiveState({ forceFlow: Boolean(TOMTOM_API_KEY), forceWeather: !liveState.weather });
+  }
+});
+
+// ── Routes ──
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    tomtomConfigured: Boolean(TOMTOM_API_KEY),
+    updatedAt: liveState.updatedAt,
+    activeClients: io.engine.clientsCount,
+    monitoredJunctions: monitoredJunctions.length,
+    alertsCount: liveState.predictions.length,
+    weatherLoaded: Boolean(liveState.weather)
+  });
+});
+
+app.get('/tiles/traffic/:z/:x/:y.png', async (req, res) => {
+  const z = Number(req.params.z);
+  const x = Number(req.params.x);
+  const y = Number(req.params.y);
+
+  if (
+    !Number.isInteger(z) ||
+    !Number.isInteger(x) ||
+    !Number.isInteger(y) ||
+    z < 0 ||
+    z > 22 ||
+    x < 0 ||
+    y < 0
+  ) {
+    return res.status(400).json({ error: 'Invalid tile coordinates' });
+  }
+
+  if (!TOMTOM_API_KEY) {
+    return res.status(204).end();
+  }
+
+  const cacheKey = `${z}/${x}/${y}`;
+  const cached = tileCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=120');
+    return res.send(cached.buffer);
+  }
+
   try {
-    var payload = Buffer.from(parts[0], 'base64').toString('utf8');
-    var expectedSig = crypto.createHmac('sha256', AUTH_SECRET).update(payload).digest('hex');
-    if (expectedSig !== parts[1]) return null;
-    return JSON.parse(payload);
-  } catch(e) { return null; }
-}
-
-function requireOfficerAuth(req, res, next) {
-  var auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Authentication required' });
-  var decoded = verifyToken(auth.substring(7));
-  if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
-  req.officerId = decoded.officerId;
-  req.badge = decoded.badge;
-  next();
-}
-
-// === Train ML Model ===
-console.log('\n  [NGP-TRAFFIC] Initializing...');
-const mlModel = new RandomForest();
-mlModel.train(junctions);
-
-// === Build Road Graph ===
-console.log('  [ROUTING] Building road network graph...');
-const roadGraph = routing.buildGraph(junctions, roadSegments);
-console.log('  [ROUTING] Graph built: ' + Object.keys(roadGraph).length + ' nodes');
-
-// === Utility ===
-function haversine(lat1, lon1, lat2, lon2) {
-  const R = 6371000;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
-
-// === Location Verification ===
-function verifyLocation(lat, lng) {
-  var minDist = Infinity;
-  var nearestFeature = null;
-  junctions.forEach(function(j) {
-    var d = haversine(lat, lng, j.lat, j.lng);
-    if (d < minDist) { minDist = d; nearestFeature = { type: 'junction', name: j.name, distance: d }; }
-  });
-  roadSegments.forEach(function(seg) {
-    seg.points.forEach(function(pt) {
-      var d = haversine(lat, lng, pt[0], pt[1]);
-      if (d < minDist) { minDist = d; nearestFeature = { type: 'road', name: seg.name, distance: d }; }
+    const upstreamUrl =
+      `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/${z}/${x}/${y}.png` +
+      `?key=${encodeURIComponent(TOMTOM_API_KEY)}`;
+    const upstream = await fetch(upstreamUrl, {
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
-  });
-  return {
-    verified: minDist < 300,
-    nearestFeature: nearestFeature,
-    distanceToRoad: Math.round(minDist),
-    confidence: minDist < 100 ? 'high' : minDist < 300 ? 'medium' : 'low'
-  };
-}
 
-// === Risk Scoring (hybrid: heuristic + ML) ===
-function calcRiskScore(junction, hour, incidents) {
-  hour = hour || 14;
-  incidents = incidents || [];
-  var dayOfWeek = new Date().getDay();
-  var rainMM = 0;
-  var incidentWeight = 0;
-  incidents.forEach(function(inc) {
-    var dist = haversine(junction.lat, junction.lng, inc.lat, inc.lng);
-    if (dist < (inc.affectedRadius || 800)) {
-      incidentWeight = Math.max(incidentWeight, inc.severity === 'high' ? 1 : 0.7);
+    if (!upstream.ok) {
+      return res.status(upstream.status === 404 ? 204 : 502).end();
     }
-  });
-  var features = extractFeatures(junction, hour, dayOfWeek, rainMM, incidentWeight, 0);
-  var mlScore = mlModel.predict(features);
 
-  const maxAccidents = 30;
-  const accidentNorm = Math.min(junction.accidentHistory / maxAccidents, 1) * 100;
-  const hourVol = junction.trafficByHour[hour] || 0;
-  const maxHourVol = Math.max.apply(null, junction.trafficByHour);
-  const trafficNorm = (hourVol / (maxHourVol || 1)) * 100;
-  const roadTypeScores = { major_intersection: 100, highway_entry: 85, school_zone: 90, commercial: 70, landmark_junction: 65, minor: 40 };
-  const roadFactor = roadTypeScores[junction.roadType] || 50;
-  var timeFactor;
-  if ((hour >= 8 && hour <= 10) || (hour >= 17 && hour <= 19)) timeFactor = 100;
-  else if (hour >= 22 || hour <= 5) timeFactor = 70;
-  else if (hour >= 11 && hour <= 16) timeFactor = 55;
-  else timeFactor = 40;
-  const pedScores = { high: 100, medium: 60, low: 20 };
-  const pedFactor = pedScores[junction.pedestrianDensity] || 40;
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    if (tileCache.size >= TILE_CACHE_MAX_ENTRIES) {
+      const oldestKey = tileCache.keys().next().value;
+      if (oldestKey !== undefined) tileCache.delete(oldestKey);
+    }
+    tileCache.set(cacheKey, {
+      buffer,
+      expiresAt: Date.now() + TILE_CACHE_TTL_MS
+    });
 
-  var proximityBonus = 0;
-  stations.forEach(function(s) { if (haversine(junction.lat, junction.lng, s.lat, s.lng) < 1500) proximityBonus = 10; });
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=120');
+    return res.send(buffer);
+  } catch (_) {
+    return res.status(502).end();
+  }
+});
 
-  var incidentFactor = incidentWeight * 100;
-  var heuristicScore = Math.round(0.25*accidentNorm + 0.20*trafficNorm + 0.15*roadFactor + 0.15*timeFactor + 0.10*pedFactor + 0.05*proximityBonus + 0.10*incidentFactor);
-  var total = Math.round(0.6 * mlScore + 0.4 * heuristicScore);
-  var level = total >= 70 ? 'high' : total >= 40 ? 'medium' : 'low';
+app.get('/api/search', async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  if (q.length < 2 || q.length > 100) {
+    return res.status(400).json({ error: 'Query must be between 2 and 100 characters', results: [] });
+  }
+
+  if (!TOMTOM_API_KEY) {
+    return res.status(503).json({
+      error: 'TOMTOM_API_KEY is not configured on the server',
+      tomtomConfigured: false,
+      results: []
+    });
+  }
+
+  try {
+    const url =
+      `https://api.tomtom.com/search/2/search/${encodeURIComponent(q)}.json` +
+      `?key=${encodeURIComponent(TOMTOM_API_KEY)}` +
+      `&lat=${NAGPUR_CENTER.lat}&lon=${NAGPUR_CENTER.lng}&radius=25000&countrySet=IN&limit=6`;
+
+    const data = await fetchJson(url);
+    const results = (Array.isArray(data?.results) ? data.results : [])
+      .map((item) => {
+        const lat = Number(item?.position?.lat);
+        const lng = Number(item?.position?.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+        const name = item?.poi?.name || item?.address?.freeformAddress || q;
+        const address = item?.address?.freeformAddress || 'Nagpur, Maharashtra';
+        return { name, address, lat, lng };
+      })
+      .filter(Boolean);
+
+    return res.json({ results });
+  } catch (_) {
+    return res.status(502).json({ error: 'Place search service unavailable', results: [] });
+  }
+});
+
+async function fetchTomTomRoute(fromLat, fromLng, toLat, toLng, routeType) {
+  const url =
+    `https://api.tomtom.com/routing/1/calculateRoute/${fromLat},${fromLng}:${toLat},${toLng}/json` +
+    `?key=${encodeURIComponent(TOMTOM_API_KEY)}` +
+    `&traffic=true&travelMode=car&routeType=${routeType}`;
+
+  const data = await fetchJson(url);
+  const route = Array.isArray(data?.routes) ? data.routes[0] : null;
+  if (!route || !route.summary) {
+    throw new Error(`No ${routeType} route returned`);
+  }
+
+  const points = (route.legs || []).flatMap((leg) =>
+    (leg.points || []).map((pt) => [pt.latitude, pt.longitude])
+  );
 
   return {
-    total: total, level: level, mlScore: mlScore, heuristicScore: heuristicScore,
-    breakdown: {
-      accidentHistory: { score: Math.round(accidentNorm*0.25), max: 25 },
-      trafficVolume: { score: Math.round(trafficNorm*0.20), max: 20 },
-      roadType: { score: Math.round(roadFactor*0.15), max: 15 },
-      timeOfDay: { score: Math.round(timeFactor*0.15), max: 15 },
-      pedestrian: { score: Math.round(pedFactor*0.10), max: 10 },
-      proximity: { score: Math.round(proximityBonus*0.05), max: 5 },
-      incident: { score: Math.round(incidentFactor*0.10), max: 10 }
-    }
+    distanceKm: Math.round((Number(route.summary.lengthInMeters || 0) / 1000) * 10) / 10,
+    travelTimeMin: Math.max(1, Math.round(Number(route.summary.travelTimeInSeconds || 0) / 60)),
+    trafficDelayMin: Math.round(Number(route.summary.trafficDelayInSeconds || 0) / 60),
+    coordinates: points
   };
 }
 
-// === Officer Allocation (AI-Optimized) ===
-// Deploys officers to HIGH risk junctions first (more officers), then MEDIUM, then LOW
-// Officers are assigned based on proximity to their home station
-function allocateOfficers(scored, numOfficers, overrides) {
-  var deployment = {};
-  scored.forEach(function(j) { deployment[j.id] = []; });
+app.get('/api/route', async (req, res) => {
+  const fromLat = Number(req.query.fromLat);
+  const fromLng = Number(req.query.fromLng);
+  const toLat = Number(req.query.toLat);
+  const toLng = Number(req.query.toLng);
 
-  var available = officers.slice(0, numOfficers);
-  var usedOfficerIds = {};
+  const valid =
+    Number.isFinite(fromLat) &&
+    Number.isFinite(fromLng) &&
+    Number.isFinite(toLat) &&
+    Number.isFinite(toLng) &&
+    fromLat >= -90 &&
+    fromLat <= 90 &&
+    toLat >= -90 &&
+    toLat <= 90 &&
+    fromLng >= -180 &&
+    fromLng <= 180 &&
+    toLng >= -180 &&
+    toLng <= 180;
 
-  // Apply manual overrides first
-  Object.keys(overrides).forEach(function(jid) {
-    var offId = overrides[jid];
-    var off = available.find(function(o) { return o.id === offId; });
-    if (off) {
-      deployment[jid] = deployment[jid] || [];
-      deployment[jid].push(off);
-      usedOfficerIds[offId] = true;
+  if (!valid) {
+    return res.status(400).json({ error: 'Valid fromLat, fromLng, toLat, and toLng are required' });
+  }
+
+  if (!TOMTOM_API_KEY) {
+    return res.status(503).json({
+      error: 'TOMTOM_API_KEY is not configured on the server',
+      tomtomConfigured: false
+    });
+  }
+
+  try {
+    const [fastest, shortest] = await Promise.all([
+      fetchTomTomRoute(fromLat, fromLng, toLat, toLng, 'fastest'),
+      fetchTomTomRoute(fromLat, fromLng, toLat, toLng, 'shortest')
+    ]);
+    return res.json({ fastest, shortest });
+  } catch (_) {
+    return res.status(502).json({ error: 'Routing service unavailable' });
+  }
+});
+
+function startPollingLoops() {
+  setInterval(() => {
+    if (io.engine.clientsCount > 0) {
+      refreshLiveState({ forceFlow: true });
     }
-  });
+  }, FLOW_POLL_INTERVAL_MS);
 
-  var remaining = available.filter(function(o) { return !usedOfficerIds[o.id]; });
+  setInterval(() => {
+    if (io.engine.clientsCount > 0) {
+      refreshLiveState({ forceIncidents: true });
+    }
+  }, INCIDENTS_POLL_INTERVAL_MS);
 
-  // Separate junctions by risk level
-  var highRisk = scored.filter(function(j) { return j.risk.level === 'high'; });
-  var medRisk = scored.filter(function(j) { return j.risk.level === 'medium'; });
-  var lowRisk = scored.filter(function(j) { return j.risk.level === 'low'; });
-
-  // Allocate officers: high risk gets ~40% of officers, medium ~35%, low ~25%
-  var highCount = Math.ceil(remaining.length * 0.40);
-  var medCount = Math.ceil(remaining.length * 0.35);
-
-  // Distribute to high-risk junctions
-  var highOfficers = remaining.splice(0, highCount);
-  if (highRisk.length > 0) {
-    var perHigh = Math.max(1, Math.ceil(highOfficers.length / highRisk.length));
-    var hIdx = 0;
-    highOfficers.forEach(function(o) {
-      if (hIdx >= highRisk.length) hIdx = 0;
-      deployment[highRisk[hIdx].id].push(o);
-      hIdx++;
-    });
-  } else {
-    // No high risk junctions, give these officers to medium
-    remaining = highOfficers.concat(remaining);
-    medCount = Math.ceil(remaining.length * 0.60);
-  }
-
-  // Distribute to medium-risk junctions
-  var medOfficers = remaining.splice(0, medCount);
-  if (medRisk.length > 0) {
-    var mIdx = 0;
-    medOfficers.forEach(function(o) {
-      if (mIdx >= medRisk.length) mIdx = 0;
-      deployment[medRisk[mIdx].id].push(o);
-      mIdx++;
-    });
-  } else {
-    remaining = medOfficers.concat(remaining);
-  }
-
-  // Distribute remaining to low-risk junctions
-  if (lowRisk.length > 0 && remaining.length > 0) {
-    var lIdx = 0;
-    remaining.forEach(function(o) {
-      if (lIdx >= lowRisk.length) lIdx = 0;
-      deployment[lowRisk[lIdx].id].push(o);
-      lIdx++;
-    });
-  }
-
-  return deployment;
+  setInterval(() => {
+    if (io.engine.clientsCount > 0) {
+      refreshLiveState({ forceWeather: true });
+    }
+  }, WEATHER_POLL_INTERVAL_MS);
 }
 
-// === Baseline Deployment (round-robin, no optimization) ===
-function getBaselineDeployment() {
-  var baseline = {};
-  junctions.forEach(function(j) { baseline[j.id] = []; });
-  var jIdx = 0;
-  officers.forEach(function(o) {
-    if (jIdx >= junctions.length) jIdx = 0;
-    baseline[junctions[jIdx].id].push(o);
-    jIdx++;
+if (require.main === module) {
+  startPollingLoops();
+  server.listen(PORT, () => {
+    console.log(`NGP-TRAFFIC listening on http://localhost:${PORT} (TomTom configured: ${Boolean(TOMTOM_API_KEY)})`);
   });
-  return baseline;
 }
 
-// === OFFICER AUTH ENDPOINTS ===
-app.post('/api/officer/login', function(req, res) {
-  var badge = (req.body.badgeNumber || '').trim().toUpperCase();
-  var pin = (req.body.pin || '').trim();
-  if (!badge || !pin) return res.status(400).json({ error: 'Badge number and PIN required' });
-
-  var cred = officerCredentials.find(function(c) { return c.badgeNumber === badge; });
-  if (!cred) return res.status(401).json({ error: 'Invalid credentials' });
-
-  var pinHash = crypto.createHash('sha256').update(pin).digest('hex');
-  if (pinHash !== cred.pinHash) return res.status(401).json({ error: 'Invalid credentials' });
-
-  var officer = officers.find(function(o) { return o.id === cred.officerId; });
-  if (!officer) return res.status(500).json({ error: 'Officer record not found' });
-
-  var token = createToken(cred.officerId, badge);
-  var stationObj = stations.find(function(s) { return s.id === officer.station; });
-
-  res.json({
-    token: token,
-    officer: {
-      id: officer.id, name: officer.name, badge: badge,
-      station: officer.station, stationName: stationObj ? stationObj.name : officer.station
-    }
-  });
-});
-
-app.get('/api/officer/me', requireOfficerAuth, function(req, res) {
-  var officer = officers.find(function(o) { return o.id === req.officerId; });
-  if (!officer) return res.status(404).json({ error: 'Officer not found' });
-  var stationObj = stations.find(function(s) { return s.id === officer.station; });
-  var status = officerStatuses[req.officerId] || { status: 'available' };
-
-  // Get current assignment if any
-  var hour = new Date().getHours();
-  var scored = junctions.map(function(j) { return Object.assign({}, j, { risk: calcRiskScore(j, hour, activeIncidents) }); });
-  scored.sort(function(a, b) { return b.risk.total - a.risk.total; });
-  var deployment = allocateOfficers(scored, officers.length, manualOverrides);
-  var assignedJunction = null;
-  Object.keys(deployment).forEach(function(jid) {
-    var arr = deployment[jid];
-    if (Array.isArray(arr)) {
-      arr.forEach(function(o) {
-        if (o.id === req.officerId) {
-          assignedJunction = scored.find(function(j) { return j.id === jid; });
-        }
-      });
-    }
-  });
-
-  res.json({
-    officer: { id: officer.id, name: officer.name, badge: req.badge, station: officer.station, stationName: stationObj ? stationObj.name : '' },
-    status: status,
-    assignment: assignedJunction ? {
-      junctionId: assignedJunction.id,
-      junctionName: assignedJunction.name,
-      riskScore: assignedJunction.risk.total,
-      riskLevel: assignedJunction.risk.level,
-      reason: 'AI-optimized deployment - ' + assignedJunction.risk.level.toUpperCase() + ' risk area',
-      priority: assignedJunction.risk.level === 'high' ? 'URGENT' : assignedJunction.risk.level === 'medium' ? 'NORMAL' : 'LOW',
-      lat: assignedJunction.lat, lng: assignedJunction.lng
-    } : null,
-    activeIncidents: activeIncidents.filter(function(inc) {
-      return assignedJunction ? haversine(assignedJunction.lat, assignedJunction.lng, inc.lat, inc.lng) < 2000 : false;
-    })
-  });
-});
-
-// === PUBLIC DATA ENDPOINTS ===
-app.get('/api/junctions', function(req, res) { res.json(junctions); });
-app.get('/api/stations', function(req, res) { res.json(stations); });
-app.get('/api/officers', function(req, res) { res.json(officers); });
-app.get('/api/preset-incidents', function(req, res) { res.json(presetIncidents); });
-app.get('/api/road-segments', function(req, res) { res.json(roadSegments); });
-
-app.get('/api/risk-scores', function(req, res) {
-  var hour = parseInt(req.query.hour) || 14;
-  var scored = junctions.map(function(j) { return Object.assign({}, j, { risk: calcRiskScore(j, hour, activeIncidents) }); });
-  scored.sort(function(a, b) { return b.risk.total - a.risk.total; });
-  res.json(scored);
-});
-
-// === ML METRICS ===
-app.get('/api/ml/metrics', function(req, res) {
-  res.json({
-    modelType: 'Gradient Boosted Ensemble (50 stumps, lr=0.15)',
-    metrics: Object.assign({}, mlModel.metrics, { trainSize: mlModel.metrics.sampleSize * 4 }),
-    featureImportance: mlModel.featureImportance,
-    featureNames: FEATURE_NAMES,
-    config: { rounds: 50, learningRate: 0.15 }
-  });
-});
-
-// === ALLOCATION ===
-app.post('/api/randomize-traffic', function(req, res) {
-  var hour = parseInt(req.body.hour) || new Date().getHours();
-  var timeMod = 1.0;
-  if (hour >= 8 && hour <= 11) timeMod = 1.5;
-  else if (hour >= 17 && hour <= 20) timeMod = 1.6;
-  else if (hour >= 1 && hour <= 5) timeMod = 0.2;
-  junctions.forEach(function(j) {
-    var baseVal = ((j.name.length * 13) % 100) / 100.0;
-    var randomJitter = Math.random() * 0.4 - 0.2;
-    var traffic = (baseVal + randomJitter) * timeMod;
-    var maxAcc = Math.max.apply(null, j.trafficByHour);
-    j.trafficByHour[hour] = Math.round(maxAcc * Math.max(0.1, Math.min(1.0, traffic)));
-  });
-  res.json({success:true});
-});
-
-app.get('/api/allocation', function(req, res) {
-  var hour = parseInt(req.query.hour) || 14;
-  var numOfficers = parseInt(req.query.officers) || 25;
-  var queryIncidents = req.query.incidents ? JSON.parse(decodeURIComponent(req.query.incidents)) : null;
-  var effectiveIncidents = queryIncidents ? queryIncidents : activeIncidents;
-  var scored = junctions.map(function(j) { return Object.assign({}, j, { risk: calcRiskScore(j, hour, effectiveIncidents) }); });
-  scored.sort(function(a, b) { return b.risk.total - a.risk.total; });
-  var optimized = allocateOfficers(scored, numOfficers, manualOverrides);
-  var baseline = getBaselineDeployment();
-
-  // Unmanned = high-risk junctions with NO officers
-  var unmanned = scored.filter(function(j) { return j.risk.level === 'high' && (!optimized[j.id] || optimized[j.id].length === 0); });
-
-  var highMed = scored.filter(function(j) { return j.risk.level !== 'low'; });
-
-  // Count how many high/med junctions have at least one officer
-  var optHighMedCovered = Object.keys(optimized).filter(function(jid) {
-    var j = scored.find(function(s) { return s.id === jid; });
-    return j && j.risk.level !== 'low' && optimized[jid].length > 0;
-  });
-
-  var baseHighMedCovered = Object.keys(baseline).filter(function(jid) {
-    var j = scored.find(function(s) { return s.id === jid; });
-    return j && j.risk.level !== 'low' && baseline[jid].length > 0;
-  });
-
-  var stats = {
-    totalJunctions: scored.length,
-    highRisk: scored.filter(function(j) { return j.risk.level === 'high'; }).length,
-    mediumRisk: scored.filter(function(j) { return j.risk.level === 'medium'; }).length,
-    lowRisk: scored.filter(function(j) { return j.risk.level === 'low'; }).length,
-    officersDeployed: Object.keys(optimized).reduce(function(sum, jid) { return sum + optimized[jid].length; }, 0),
-    officersTotal: numOfficers,
-    unmannedHighRisk: unmanned.length,
-    baselineCoverage: Math.min(100, Math.round(baseHighMedCovered.length / Math.max(highMed.length, 1) * 100)),
-    optimizedCoverage: Math.min(100, Math.round(optHighMedCovered.length / Math.max(highMed.length, 1) * 100)),
-    avgRiskScore: Math.round(scored.reduce(function(s, j) { return s + j.risk.total; }, 0) / scored.length)
-  };
-  res.json({ junctions: scored, optimizedDeployment: optimized, baselineDeployment: baseline, unmannedHighRisk: unmanned, stats: stats, activeIncidents: effectiveIncidents });
-});
-
-app.get('/api/baseline', function(req, res) { res.json(getBaselineDeployment()); });
-
-// === ROUTING ===
-app.get('/api/route', function(req, res) {
-  var from = req.query.from, to = req.query.to;
-  if (!from || !to) return res.status(400).json({ error: 'from and to required' });
-  var route = routing.dijkstra(roadGraph, from, to);
-  if (!route) return res.json({ error: 'No route found', from: from, to: to });
-  route.path = route.path.map(function(p) {
-    var j = junctions.find(function(jj) { return jj.id === p.junction; });
-    return Object.assign({}, p, { lat: j ? j.lat : 0, lng: j ? j.lng : 0, name: j ? j.name : p.junction });
-  });
-  res.json(route);
-});
-
-app.get('/api/nearest-station', function(req, res) {
-  var junctionId = req.query.junction;
-  if (!junctionId) return res.status(400).json({ error: 'junction required' });
-  var results = routing.findNearestStation(stations, junctions, roadGraph, junctionId);
-  res.json(results.slice(0, 3));
-});
-
-app.get('/api/officer-statuses', function(req, res) { res.json(officerStatuses); });
-
-// === INCIDENT (with verification pipeline) ===
-app.post('/api/incident', function(req, res) {
-  var b = req.body;
-  var locVerification = verifyLocation(b.lat, b.lng);
-
-  var verificationStatus = 'NEW';
-  var hasPhoto = !!(b.photoMeta && b.photoMeta.size > 0);
-  if (locVerification.verified && hasPhoto) verificationStatus = 'HIGH_CONFIDENCE';
-  else if (locVerification.verified) verificationStatus = 'LOCATION_VERIFIED';
-  else if (hasPhoto) verificationStatus = 'PHOTO_ATTACHED';
-
-  var incident = {
-    id: 'INC_' + Date.now(),
-    name: b.name || 'Incident',
-    type: b.type || 'accident',
-    lat: b.lat, lng: b.lng,
-    severity: b.severity || 'high',
-    affectedRadius: b.severity === 'high' ? 800 : 500,
-    description: b.description || 'Reported incident',
-    reportedBy: b.reportedBy || 'Control Room',
-    timestamp: new Date().toISOString(),
-    resolved: false,
-    verificationStatus: verificationStatus,
-    locationVerification: locVerification,
-    photoMeta: hasPhoto ? { size: b.photoMeta.size, type: b.photoMeta.type, timestamp: b.photoMeta.timestamp || new Date().toISOString() } : null,
-    responseStatus: 'RECEIVED',
-    responseTimeline: [{ status: 'RECEIVED', timestamp: new Date().toISOString() }]
-  };
-  activeIncidents.push(incident);
-
-  // Recalculate deployment
-  var hour = parseInt(req.query.hour) || new Date().getHours();
-  var numOfficers = parseInt(req.query.officers) || officers.length;
-  var scored = junctions.map(function(j) { return Object.assign({}, j, { risk: calcRiskScore(j, hour, activeIncidents) }); });
-  scored.sort(function(a, b) { return b.risk.total - a.risk.total; });
-  var redeployment = allocateOfficers(scored, numOfficers, manualOverrides);
-
-  var nearestJ = routing.findNearestJunction(junctions, incident.lat, incident.lng);
-  var dispatchInfo = null;
-  if (nearestJ && redeployment[nearestJ.id] && redeployment[nearestJ.id].length > 0) {
-    var dispatchOfficer = redeployment[nearestJ.id][0];
-    var eta = routing.calcOfficerETA(dispatchOfficer.station, nearestJ.id, stations, junctions, roadGraph);
-    dispatchInfo = { officer: dispatchOfficer, junction: nearestJ, eta: eta ? eta.totalTime : null, route: eta };
-    officerStatuses[dispatchOfficer.id] = { status: 'dispatched', junction: nearestJ.id, junctionName: nearestJ.name, incident: incident.id, eta: eta ? eta.totalTime : null, timestamp: new Date().toISOString() };
-
-    incident.responseStatus = 'TEAM_ASSIGNED';
-    incident.responseTimeline.push({ status: 'VERIFIED', timestamp: new Date().toISOString(), detail: 'Location ' + (locVerification.verified ? 'verified' : 'unverified') + ' (' + locVerification.distanceToRoad + 'm from ' + (locVerification.nearestFeature ? locVerification.nearestFeature.name : 'road') + ')' });
-    incident.responseTimeline.push({ status: 'TEAM_ASSIGNED', timestamp: new Date().toISOString(), detail: 'Response unit dispatched' });
-    if (eta) incident.responseETA = eta.totalTime;
-  }
-
-  var payload = { incident: incident, redeployment: redeployment, junctions: scored, dispatch: dispatchInfo };
-  io.emit('incident:new', payload);
-  io.emit('deployment:update', { redeployment: redeployment, junctions: scored, activeIncidents: activeIncidents });
-  res.json(payload);
-});
-
-// === Public incident status (for citizen tracking) ===
-app.get('/api/incident/:id/status', function(req, res) {
-  var inc = activeIncidents.find(function(i) { return i.id === req.params.id; });
-  if (!inc) return res.status(404).json({ error: 'Incident not found', resolved: true });
-  res.json({
-    id: inc.id,
-    responseStatus: inc.responseStatus,
-    verificationStatus: inc.verificationStatus,
-    responseTimeline: (inc.responseTimeline || []).map(function(t) {
-      return { status: t.status, timestamp: t.timestamp, detail: t.detail };
-    }),
-    eta: inc.responseETA || null,
-    resolved: inc.resolved
-  });
-});
-
-app.post('/api/incident/resolve', function(req, res) {
-  var incId = req.body.id;
-  var inc = activeIncidents.find(function(i) { return i.id === incId; });
-  if (inc) {
-    inc.resolved = true;
-    inc.responseStatus = 'RESOLVED';
-    inc.responseTimeline.push({ status: 'RESOLVED', timestamp: new Date().toISOString() });
-  }
-  activeIncidents = activeIncidents.filter(function(i) { return i.id !== incId; });
-  Object.keys(officerStatuses).forEach(function(offId) {
-    if (officerStatuses[offId].incident === incId) { officerStatuses[offId] = { status: 'available', timestamp: new Date().toISOString() }; }
-  });
-  io.emit('incident:resolved', { id: incId, activeIncidents: activeIncidents });
-  io.emit('incident:status-update', { id: incId, status: 'RESOLVED' });
-  res.json({ success: true, activeIncidents: activeIncidents });
-});
-
-app.post('/api/incident/clear', function(req, res) {
-  activeIncidents = [];
-  officerStatuses = {};
-  io.emit('incidents:cleared', {});
-  res.json({ success: true });
-});
-
-// === Officer status updates (require auth) ===
-app.post('/api/officer/accept', requireOfficerAuth, function(req, res) {
-  var offId = req.officerId;
-  if (officerStatuses[offId]) {
-    officerStatuses[offId].status = 'en-route';
-    officerStatuses[offId].acceptedAt = new Date().toISOString();
-    io.emit('officer:status', { officerId: offId, status: officerStatuses[offId] });
-    var incId = officerStatuses[offId].incident;
-    var inc = activeIncidents.find(function(i) { return i.id === incId; });
-    if (inc) {
-      inc.responseStatus = 'EN_ROUTE';
-      inc.responseTimeline.push({ status: 'EN_ROUTE', timestamp: new Date().toISOString(), detail: 'Response unit en route' });
-      io.emit('incident:status-update', { id: incId, status: 'EN_ROUTE', eta: officerStatuses[offId].eta });
-    }
-  }
-  res.json({ success: true, status: officerStatuses[offId] });
-});
-
-app.post('/api/officer/arrived', requireOfficerAuth, function(req, res) {
-  var offId = req.officerId;
-  if (officerStatuses[offId]) {
-    officerStatuses[offId].status = 'on-scene';
-    officerStatuses[offId].arrivedAt = new Date().toISOString();
-    io.emit('officer:status', { officerId: offId, status: officerStatuses[offId] });
-    var incId = officerStatuses[offId].incident;
-    var inc = activeIncidents.find(function(i) { return i.id === incId; });
-    if (inc) {
-      inc.responseStatus = 'ON_SCENE';
-      inc.responseTimeline.push({ status: 'ON_SCENE', timestamp: new Date().toISOString(), detail: 'Response unit arrived on scene' });
-      io.emit('incident:status-update', { id: incId, status: 'ON_SCENE' });
-    }
-  }
-  res.json({ success: true, status: officerStatuses[offId] });
-});
-
-// Accept/arrived without auth (backward compat for officer app pre-login, also from control room)
-app.post('/api/officer/accept-legacy', function(req, res) {
-  var offId = req.body.officerId;
-  if (officerStatuses[offId]) {
-    officerStatuses[offId].status = 'en-route';
-    officerStatuses[offId].acceptedAt = new Date().toISOString();
-    io.emit('officer:status', { officerId: offId, status: officerStatuses[offId] });
-  }
-  res.json({ success: true, status: officerStatuses[offId] });
-});
-
-app.post('/api/override', function(req, res) { if (req.body.officerId) { manualOverrides[req.body.junctionId] = req.body.officerId; } else { delete manualOverrides[req.body.junctionId]; } res.json({ success: true, overrides: manualOverrides }); });
-app.post('/api/override/clear', function(req, res) { manualOverrides = {}; res.json({ success: true }); });
-
-// === Socket.IO ===
-io.on('connection', function(socket) {
-  console.log('  [WS] Client connected: ' + socket.id);
-  socket.emit('init', { activeIncidents: activeIncidents, officerStatuses: officerStatuses });
-  socket.on('disconnect', function() { console.log('  [WS] Client disconnected: ' + socket.id); });
-});
-
-// === Start ===
-server.listen(PORT, function() {
-  console.log('');
-  console.log('  NGP-TRAFFIC Server v3.0');
-  console.log('  http://localhost:' + PORT);
-  console.log('  Command Center:  /');
-  console.log('  Citizen App:     /citizen.html');
-  console.log('  Officer App:     /officer.html');
-  console.log('  Simulation Lab:  /simulation.html');
-  console.log('  Data: ' + junctions.length + ' junctions, ' + officers.length + ' officers, ' + stations.length + ' stations');
-  console.log('  ML: Gradient Boosted (50 rounds) | Auth: HMAC tokens | Verification: Pipeline active');
-  console.log('  WebSocket: Active');
-  console.log('');
-});
+module.exports = {
+  app,
+  server,
+  io,
+  predictDeployments,
+  haversineMeters,
+  findNearestPoliceStation,
+  describeWeatherCode,
+  extractIncidentPoint
+};

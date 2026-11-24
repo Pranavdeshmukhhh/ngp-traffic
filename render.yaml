@@ -1,4 +1,4 @@
-﻿services:
+services:
   - type: web
     name: ngp-traffic
     runtime: node
@@ -9,3 +9,7 @@
         value: production
       - key: PORT
         value: 3000
+      - key: TOMTOM_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGIN
+        sync: false

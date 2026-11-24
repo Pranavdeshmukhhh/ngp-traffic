@@ -1,219 +1,206 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NGP-TRAFFIC | Nagpur Traffic Control Room</title>
-  <meta name="description" content="AI-Based Traffic Risk Heatmap and Police Deployment Decision Support for Nagpur City">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="css/styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nagpur Live Traffic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
-  <div class="loading-overlay" id="loadingOverlay">
-    <div class="loading-spinner"></div>
-    <div class="loading-text">Initializing Control Room...</div>
+  <div id="map" aria-label="Nagpur live traffic map"></div>
+
+  <div id="setup-banner" class="setup-banner hidden" role="status">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="10"></circle>
+      <line x1="12" y1="8" x2="12" y2="12"></line>
+      <line x1="12" y1="16" x2="12.01" y2="16"></line>
+    </svg>
+    <span><code>TOMTOM_API_KEY</code> is not set. Add it to your environment to enable live traffic tiles, junction flow, place search, and routing.</span>
   </div>
 
-  <header id="header">
-    <div class="header-left">
-      <div class="logo">
-        <span class="logo-icon">&#128678;</span>
-        <div class="logo-text">
-          <h1>NGP-TRAFFIC</h1>
-          <span class="subtitle">Nagpur City &mdash; Traffic Control Room</span>
-        </div>
+  <aside class="route-panel" aria-label="Route planner">
+    <div class="route-header">
+      <div class="route-title-row">
+        <span class="brand-mark">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
+          </svg>
+          <span>Nagpur Route</span>
+        </span>
+        <button id="clear-route-btn" class="text-btn hidden" type="button">Clear</button>
       </div>
     </div>
-    <div class="header-center">
-      <div class="status-badges">
-        <span class="badge badge-live" id="badgeLive"><span class="pulse-dot"></span> LIVE</span>
-        <span class="badge badge-historical" id="badgeHistorical" style="display:none;">&#128337; HISTORICAL VIEW</span>
-        <span class="badge badge-mode" id="badgeMode">OPTIMIZED</span>
-      </div>
-    </div>
-    <div class="header-right">
-      <div class="clock" id="clock"></div>
-    </div>
-  </header>
 
-  <main id="main">
-    <aside id="sidebar">
-      <div class="panel" id="statsPanel">
-        <h2 class="panel-title"><span>&#128202;</span> Overview</h2>
-        <div class="stats-grid">
-          <div class="stat-card stat-total"><div class="stat-value" id="statTotal">50</div><div class="stat-label">Junctions</div></div>
-          <div class="stat-card stat-high"><div class="stat-value" id="statHigh">--</div><div class="stat-label">High Risk</div></div>
-          <div class="stat-card stat-medium"><div class="stat-value" id="statMedium">--</div><div class="stat-label">Medium Risk</div></div>
-          <div class="stat-card stat-low"><div class="stat-value" id="statLow">--</div><div class="stat-label">Low Risk</div></div>
-        </div>
-        <div class="stats-grid">
-          <div class="stat-card stat-officers"><div class="stat-value" id="statDeployed">--</div><div class="stat-label">Deployed</div></div>
-          <div class="stat-card stat-unmanned"><div class="stat-value" id="statUnmanned">--</div><div class="stat-label">Unmanned</div></div>
-        </div>
-        <div style="margin:10px 0;padding:10px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);">
-          <canvas id="riskChart" height="120"></canvas>
-        </div>
-        <div class="coverage-compare" id="coverageCompare">
-          <h3>Coverage Comparison</h3>
-          <div class="coverage-bar-group">
-            <div class="coverage-row">
-              <span class="coverage-label">Baseline</span>
-              <div class="coverage-bar"><div class="coverage-fill baseline-fill" id="baselineFill"></div></div>
-              <span class="coverage-pct" id="baselinePct">--%</span>
-            </div>
-            <div class="coverage-row">
-              <span class="coverage-label">AI-Optimized</span>
-              <div class="coverage-bar"><div class="coverage-fill optimized-fill" id="optimizedFill"></div></div>
-              <span class="coverage-pct" id="optimizedPct">--%</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel" id="notificationsPanel">
-        <h2 class="panel-title"><span>&#128276;</span> Notifications</h2>
-        <div id="notificationsList" class="notifications-list">
-          <div class="notification-empty">No active notifications</div>
-        </div>
-      </div>
-    </aside>
-
-    <section id="mapSection">
-      <div id="map"></div>
-      <div class="map-controls">
-        <div class="map-control-group">
-          <label class="control-label">Deployment View</label>
-          <div class="toggle-group">
-            <button class="toggle-btn active" id="btnOptimized" onclick="setDeploymentMode('optimized')">AI-Optimized</button>
-            <button class="toggle-btn" id="btnBaseline" onclick="setDeploymentMode('baseline')">Baseline</button>
-          </div>
-        </div>
-        <div class="map-control-group">
-          <label class="control-label">Map Layers</label>
-          <div class="checkbox-group">
-            <label class="cb-label"><input type="checkbox" id="cbHeatmap" checked onchange="toggleLayer('heatmap')"> Risk Heatmap</label>
-            <label class="cb-label"><input type="checkbox" id="cbMarkers" checked onchange="toggleLayer('markers')"> Junctions</label>
-            <label class="cb-label"><input type="checkbox" id="cbOfficers" checked onchange="toggleLayer('officers')"> Officers</label>
-            <label class="cb-label"><input type="checkbox" id="cbStations" checked onchange="toggleLayer('stations')"> Stations</label>
-            <label class="cb-label"><input type="checkbox" id="cbTraffic" onchange="toggleLayer('traffic')"> Road Traffic</label>
-            <button onclick="randomizeTraffic()" style="margin-top:8px; width:100%; padding:4px; font-size:10px; background:var(--primary); color:white; border:none; border-radius:4px; cursor:pointer;">Randomize Traffic</button>
-          </div>
-        </div>
-      </div>
-      <!-- Historical time bar -->
-      <div class="historical-bar" id="historicalBar" style="display:none;">
-        <div class="hist-info">
-          <span>&#128337;</span>
-          <span>Viewing data for <strong id="histTimeLabel">--</strong></span>
-        </div>
-        <button class="btn-back-live" onclick="backToLive()">&#9654; Back to Live</button>
-      </div>
-    </section>
-
-    <aside id="rightPanel">
-      <div class="panel" id="controlsPanel">
-        <h2 class="panel-title"><span>&#127899;</span> Controls</h2>
-        <div class="control-row">
-          <label>View Historical Data</label>
-          <div class="slider-group">
-            <input type="range" id="timeSlider" min="0" max="23" value="0" oninput="onTimeChange(this.value)">
-            <span class="slider-value" id="timeLabel">Live</span>
-          </div>
-          <div class="slider-hint">Slide left to view past hours. Cannot view future.</div>
-        </div>
-        <div class="control-row">
-          <label>Officers Available</label>
-          <div class="number-group">
-            <button class="num-btn" onclick="changeOfficers(-1)">-</button>
-            <input type="number" id="officerCount" value="654" min="1" max="654" onchange="onOfficerChange(this.value)">
-            <button class="num-btn" onclick="changeOfficers(1)">+</button>
-          </div>
-        </div>
-        <div class="control-buttons">
-          <button class="btn btn-primary" onclick="reOptimize()">&#128260; Re-Optimize</button>
-            <button class="btn btn-accent" onclick="toggleRoutePlanner()">&#128506;&#65039; Route Planner</button>
-          <a href="/simulation.html" class="btn btn-outline" target="_blank">&#128736; Open Simulation Lab</a>
-          <button class="btn btn-outline" onclick="showMLMetrics()">&#129302; AI Model Metrics</button>
-        </div>
-      </div>
-
-      <div class="panel" id="tablePanel">
-        <h2 class="panel-title"><span>&#128203;</span> Risk Rankings</h2>
-        <div class="table-search">
-          <input type="text" id="tableSearch" placeholder="Search junctions..." oninput="filterTable(this.value)">
-        </div>
-        <div class="table-container">
-          <table id="riskTable">
-            <thead><tr><th>#</th><th>Junction</th><th>Score</th><th>Risk</th><th>Officer</th></tr></thead>
-            <tbody id="riskTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </aside>
-  </main>
-  <datalist id="squareNames"></datalist>
-
-  <!-- Detail Side Panel -->
-  <div class="detail-panel" id="detailPanel" style="display:none;">
-    <div class="detail-header">
-      <h2 id="detailTitle">Details</h2>
-      <button class="detail-close" onclick="closeDetailPanel()">&times;</button>
-    </div>
-    <div class="detail-body" id="detailBody"></div>
-  </div>
-
-  <!-- Redeployment Notification Toast -->
-  <div class="toast-container" id="toastContainer"></div>
-
-  
-  <!-- Route Planner Overlay -->
-  <div id="routePlannerOverlay" class="route-planner-overlay">
-    <div class="route-planner-header">
-      <h3>&#128506;&#65039; Route Planner (OSRM)</h3>
-      <button class="btn-icon" onclick="toggleRoutePlanner()">&#10005;</button>
-    </div>
-    <div class="route-planner-body">
-      <p class="route-desc">Select points on the map or use presets.</p>
+    <div class="route-inputs-wrap">
       <div class="route-inputs">
-        <div class="route-input-group">
-          <label>Start:</label>
-          <input type="text" id="routeStart" list="squareNames" placeholder="Click map or type landmark..." autocomplete="off">
+        <div class="input-group">
+          <span class="pin-dot origin-dot" aria-hidden="true"></span>
+          <input
+            id="origin-input"
+            type="text"
+            placeholder="Origin or click map"
+            autocomplete="off"
+            aria-label="Origin"
+          />
+          <div id="origin-dropdown" class="autocomplete-dropdown hidden" role="listbox"></div>
         </div>
-        <div class="route-input-group">
-          <label>Destination:</label>
-          <input type="text" id="routeEnd" list="squareNames" placeholder="Click map or type landmark..." autocomplete="off">
+
+        <div class="input-divider"></div>
+
+        <div class="input-group">
+          <span class="pin-dot dest-dot" aria-hidden="true"></span>
+          <input
+            id="dest-input"
+            type="text"
+            placeholder="Destination or click map"
+            autocomplete="off"
+            aria-label="Destination"
+          />
+          <div id="dest-dropdown" class="autocomplete-dropdown hidden" role="listbox"></div>
         </div>
       </div>
-      <button class="btn btn-primary" style="width:100%; margin-top:10px;" onclick="calculateRoute()">Find Route</button>
-      <div id="routeResult" class="route-result-container"></div>
+
+      <button id="swap-btn" class="icon-btn swap-btn" type="button" title="Swap origin and destination" aria-label="Swap origin and destination">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m3 16 4 4 4-4"></path>
+          <path d="M7 20V4"></path>
+          <path d="m21 8-4-4-4 4"></path>
+          <path d="M17 4v16"></path>
+        </svg>
+      </button>
+    </div>
+
+    <div class="quick-chips" aria-label="Quick Nagpur destinations">
+      <button class="chip" type="button" data-name="Sitabuldi" data-lat="21.1436" data-lng="79.0806">Sitabuldi</button>
+      <button class="chip" type="button" data-name="MIHAN" data-lat="21.0593" data-lng="79.0358">MIHAN</button>
+      <button class="chip" type="button" data-name="Dr. Babasaheb Ambedkar Airport" data-lat="21.0922" data-lng="79.0472">Airport</button>
+      <button class="chip" type="button" data-name="Nagpur Railway Station" data-lat="21.1492" data-lng="79.0888">Railway Station</button>
+      <button class="chip" type="button" data-name="Dharampeth" data-lat="21.1489" data-lng="79.0738">Dharampeth</button>
+    </div>
+
+    <div id="route-status" class="route-status hidden"></div>
+
+    <div id="route-cards" class="route-cards hidden">
+      <button id="card-fastest" class="route-card active" type="button">
+        <div class="route-card-head">
+          <span class="route-swatch fastest-swatch"></span>
+          <span class="route-card-label">Fastest (Live)</span>
+        </div>
+        <div id="fastest-time" class="route-card-time">-- min</div>
+        <div id="fastest-meta" class="route-card-meta">-- km</div>
+      </button>
+
+      <button id="card-shortest" class="route-card" type="button">
+        <div class="route-card-head">
+          <span class="route-swatch shortest-swatch"></span>
+          <span class="route-card-label">Shortest</span>
+        </div>
+        <div id="shortest-time" class="route-card-time">-- min</div>
+        <div id="shortest-meta" class="route-card-meta">-- km</div>
+      </button>
+    </div>
+  </aside>
+
+  <div class="top-right-controls">
+    <div class="status-pill" role="status">
+      <span class="live-indicator" aria-hidden="true"></span>
+      <span class="status-brand">Nagpur Live</span>
+      <span class="status-sep" aria-hidden="true">&middot;</span>
+      <span id="updated-text" class="status-muted">Connecting</span>
+      <span id="weather-sep" class="status-sep hidden" aria-hidden="true">&middot;</span>
+      <span id="weather-text" class="status-muted hidden"></span>
+
+      <div class="pill-actions">
+        <button id="theme-toggle" class="icon-btn" type="button" title="Toggle light/dark theme" aria-label="Toggle theme">
+          <svg id="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+          </svg>
+          <svg id="icon-sun" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2"></path>
+            <path d="M12 20v2"></path>
+            <path d="m4.93 4.93 1.41 1.41"></path>
+            <path d="m17.66 17.66 1.41 1.41"></path>
+            <path d="M2 12h2"></path>
+            <path d="M20 12h2"></path>
+            <path d="m6.34 17.66-1.41 1.41"></path>
+            <path d="m19.07 4.93-1.41 1.41"></path>
+          </svg>
+        </button>
+
+        <div class="layers-wrapper">
+          <button id="layers-btn" class="icon-btn" type="button" title="Map layers" aria-label="Toggle map layers" aria-expanded="false">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+          </button>
+
+          <div id="layers-popover" class="layers-popover hidden" role="menu">
+            <label class="layer-option">
+              <input id="layer-flow" type="checkbox" checked />
+              <span>Traffic Flow</span>
+            </label>
+            <label class="layer-option">
+              <input id="layer-incidents" type="checkbox" checked />
+              <span>Incidents</span>
+            </label>
+            <label class="layer-option">
+              <input id="layer-alerts" type="checkbox" checked />
+              <span>Alerts</span>
+            </label>
+          </div>
+        </div>
+
+        <button id="drawer-open-btn" class="alerts-pill-btn hidden" type="button" aria-label="Open live alerts">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+          <span>Alerts</span>
+          <span id="drawer-open-count" class="count-badge">0</span>
+        </button>
+      </div>
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet-polylinedecorator@1.6.0/dist/leaflet.polylineDecorator.js"></script>
-  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="js/app.js?v=1787027669278"></script>
-  <!-- ML Metrics Modal -->
-  <div id="mlModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:none;align-items:center;justify-content:center;padding:20px;">
-    <div style="background:#1a2332;border:1px solid #2a3a50;border-radius:14px;max-width:680px;width:100%;max-height:85vh;overflow-y:auto;padding:24px;position:relative;">
-      <button onclick="document.getElementById('mlModal').style.display='none'" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#7a8ba5;font-size:20px;cursor:pointer;">&#10005;</button>
-      <h2 style="font-size:18px;font-weight:800;color:#dce3ed;margin-bottom:4px;">&#129302; AI Model Metrics & Explainability</h2>
-      <p style="font-size:12px;color:#7a8ba5;margin-bottom:16px;">Random Forest ensemble trained on Nagpur junction data</p>
-      <div id="mlMetricsContent" style="display:grid;gap:12px;grid-template-columns:1fr 1fr;">
+  <aside id="alerts-drawer" class="alerts-drawer" aria-label="Live traffic alerts">
+    <div class="drawer-header">
+      <div class="drawer-title-group">
+        <h2>Live Alerts</h2>
+        <span id="alerts-count" class="count-badge">0</span>
       </div>
-      <div style="margin-top:16px;">
-        <h3 style="font-size:13px;color:#7a8ba5;margin-bottom:8px;">Feature Importance (SHAP-style permutation)</h3>
-        <canvas id="featureChart" height="200"></canvas>
-      </div>
-      <div style="margin-top:16px;">
-        <h3 style="font-size:13px;color:#7a8ba5;margin-bottom:8px;">Predicted vs Actual (validation set)</h3>
-        <canvas id="pvaChart" height="180"></canvas>
+      <button id="drawer-close-btn" class="icon-btn" type="button" title="Collapse alerts" aria-label="Collapse alerts">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+
+    <div id="alerts-list" class="alerts-list">
+      <div class="alerts-empty">
+        <p>Traffic flowing smoothly across monitored Nagpur junctions.</p>
       </div>
     </div>
-  </div>
+  </aside>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/app.js"></script>
 </body>
 </html>

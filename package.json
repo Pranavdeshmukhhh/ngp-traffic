@@ -1,19 +1,31 @@
 {
   "name": "ngp-traffic",
-  "version": "2.0.0",
-  "description": "AI-Powered Traffic Risk Heatmap and Smart Police Deployment System for Nagpur City — ML-driven, real-time, multi-app ecosystem",
+  "version": "3.0.0",
+  "description": "Real-time Nagpur live traffic intelligence, routing, and deployment advisory app",
   "main": "server.js",
+  "engines": {
+    "node": ">=20.12.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
     "test": "node test/test.js"
   },
-  "keywords": ["traffic", "nagpur", "police", "ai", "machine-learning", "random-forest", "heatmap", "smart-city", "socket.io", "real-time"],
+  "keywords": [
+    "traffic",
+    "nagpur",
+    "tomtom",
+    "open-meteo",
+    "routing",
+    "leaflet",
+    "socket.io",
+    "real-time"
+  ],
   "author": "Team NGP-TRAFFIC",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.21.0",
     "cors": "^2.8.5",
+    "express": "^4.21.0",
     "socket.io": "^4.8.0"
   }
 }
