@@ -902,6 +902,10 @@ body {
   font-size: 12px;
 }
 
+.map-popup-sub {
+  margin-top: 4px;
+}
+
 .leaflet-tooltip {
   background: var(--surface) !important;
   color: var(--text-primary) !important;

@@ -13,12 +13,27 @@ const http = require('http');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const { Server } = require('socket.io');
+const { LruCache } = require('./src/lru');
+const {
+  loadConfig,
+  tileParamsSchema,
+  tileQuerySchema,
+  searchQuerySchema,
+  routeQuerySchema,
+  redactSecrets,
+  safeFetch,
+  getClientIp,
+  createRateLimiter,
+  UpstreamBudget,
+  LatencyTracker
+} = require('./src/security');
 
-const PORT = Number(process.env.PORT) || 3000;
-const TOMTOM_API_KEY = (process.env.TOMTOM_API_KEY || '').trim();
-const ALLOWED_ORIGIN = (process.env.ALLOWED_ORIGIN || '*').trim() || '*';
+let activeConfig = loadConfig();
+let fetchImpl = globalThis.fetch;
 
+const PORT = activeConfig.port;
 const NAGPUR_CENTER = { lat: 21.1458, lng: 79.0882 };
 const NAGPUR_BBOX = '78.95,21.05,79.20,21.25';
 
@@ -33,6 +48,11 @@ const FLOW_STALE_MS = 2 * FLOW_POLL_INTERVAL_MS;
 const INCIDENTS_STALE_MS = 2 * INCIDENTS_POLL_INTERVAL_MS;
 const WEATHER_STALE_MS = 2 * WEATHER_POLL_INTERVAL_MS;
 const UPSTREAM_TIMEOUT_MS = 8000;
+const MAX_SOCKETS_PER_IP = 8;
+
+function getTomTomKey() {
+  return activeConfig.tomtomApiKey;
+}
 
 const ROADWORKS_OR_CLOSURE_CODES = new Set([7, 8, 9]);
 const ACCIDENT_OR_BREAKDOWN_CODES = new Set([1, 14]);
@@ -285,7 +305,7 @@ function predictDeployments(
 
 // ── Upstream Fetchers ──
 async function fetchJson(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+  const res = await safeFetch(url, { timeoutMs: UPSTREAM_TIMEOUT_MS }, fetchImpl);
   if (!res.ok) {
     throw new Error(`Upstream HTTP ${res.status}`);
   }
@@ -293,6 +313,7 @@ async function fetchJson(url) {
 }
 
 async function fetchWeather() {
+  upstreamBudget.tryConsume('openMeteo', 1);
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${NAGPUR_CENTER.lat}` +
     `&longitude=${NAGPUR_CENTER.lng}&current=temperature_2m,precipitation,weather_code`;
@@ -308,9 +329,10 @@ async function fetchWeather() {
 }
 
 async function fetchJunctionFlow(junction) {
+  const key = getTomTomKey();
   const url =
     `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json` +
-    `?point=${junction.lat},${junction.lng}&unit=KMPH&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
+    `?point=${junction.lat},${junction.lng}&unit=KMPH&key=${encodeURIComponent(key)}`;
   const data = await fetchJson(url);
   const seg = data?.flowSegmentData;
   if (!seg) return null;
@@ -339,7 +361,11 @@ async function fetchJunctionFlow(junction) {
 }
 
 async function fetchAllJunctionFlows() {
-  if (!TOMTOM_API_KEY) return [];
+  if (!getTomTomKey()) return [];
+  if (!upstreamBudget.tryConsume('tomtomNonTile', monitoredJunctions.length)) {
+    console.warn('Daily TomTom non-tile quota guard paused flow poll');
+    return [];
+  }
   const results = [];
   const batchSize = 4;
 
@@ -356,13 +382,18 @@ async function fetchAllJunctionFlows() {
 }
 
 async function fetchIncidents() {
-  if (!TOMTOM_API_KEY) return [];
+  const key = getTomTomKey();
+  if (!key) return [];
+  if (!upstreamBudget.tryConsume('tomtomNonTile', 1)) {
+    console.warn('Daily TomTom non-tile quota guard paused incidents poll');
+    return [];
+  }
   const fields = encodeURIComponent(
     '{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code},startTime,endTime,from,to,length,delay,roadNumbers}}}'
   );
   const url =
     `https://api.tomtom.com/traffic/services/5/incidentDetails` +
-    `?key=${encodeURIComponent(TOMTOM_API_KEY)}` +
+    `?key=${encodeURIComponent(key)}` +
     `&bbox=${NAGPUR_BBOX}&fields=${fields}&language=en-GB&timeValidityFilter=present`;
 
   const data = await fetchJson(url);
@@ -394,19 +425,68 @@ async function fetchIncidents() {
 // ── Express & Socket.IO Setup ──
 const app = express();
 const server = http.createServer(app);
+const latencyTracker = new LatencyTracker(500);
+const upstreamBudget = new UpstreamBudget({
+  tomtomNonTileLimit: activeConfig.dailyTomTomNonTileBudget,
+  tomtomTileLimit: activeConfig.dailyTomTomTileBudget
+});
 
-const corsOrigin = ALLOWED_ORIGIN === '*' ? '*' : ALLOWED_ORIGIN.split(',').map((s) => s.trim());
-app.use(cors({ origin: corsOrigin }));
-app.use(express.json());
+app.disable('x-powered-by');
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", 'https://unpkg.com'],
+        styleSrc: ["'self'", 'https://unpkg.com', 'https://fonts.googleapis.com'],
+        styleSrcAttr: ["'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https://tile.openstreetmap.org'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        connectSrc: ["'self'", 'ws:', 'wss:'],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"]
+      }
+    },
+    crossOriginEmbedderPolicy: false
+  })
+);
+
+function resolveCorsOrigin(origin, callback) {
+  if (!origin || activeConfig.allowedOrigins === '*') {
+    return callback(null, true);
+  }
+  if (Array.isArray(activeConfig.allowedOrigins) && activeConfig.allowedOrigins.includes(origin)) {
+    return callback(null, true);
+  }
+  return callback(new Error('Origin not allowed by CORS'));
+}
+
+app.use(cors({ origin: resolveCorsOrigin }));
+app.use(express.json({ limit: '16kb' }));
+app.use((req, res, next) => {
+  const start = performance.now();
+  res.on('finish', () => {
+    latencyTracker.record(performance.now() - start);
+  });
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 const io = new Server(server, {
-  cors: { origin: corsOrigin, methods: ['GET'] }
+  cors: { origin: resolveCorsOrigin, methods: ['GET'] }
 });
 
-// ── Live State & Bounded Tile Cache ──
-const tileCache = new Map();
-const basemapTileCache = new Map();
+// ── Live State & Bounded LRU Tile Caches ──
+const tileCache = new LruCache({
+  maxEntries: TILE_CACHE_MAX_ENTRIES,
+  defaultTtlMs: TILE_CACHE_TTL_MS
+});
+const basemapTileCache = new LruCache({
+  maxEntries: BASEMAP_CACHE_MAX_ENTRIES,
+  defaultTtlMs: BASEMAP_CACHE_TTL_MS
+});
+
 const liveState = {
   updatedAt: null,
   lastSuccessAt: {
@@ -416,7 +496,7 @@ const liveState = {
   },
   stale: false,
   staleSources: [],
-  tomtomConfigured: Boolean(TOMTOM_API_KEY),
+  tomtomConfigured: Boolean(getTomTomKey()),
   weather: null,
   junctions: [],
   incidents: [],
@@ -452,11 +532,10 @@ function isValidTileCoord(z, x, y) {
 }
 
 /**
- * Redact the configured TomTom API key from any diagnostic message.
+ * Redact configured secrets from diagnostic messages.
  */
 function redactKey(text) {
-  const raw = String(text || '');
-  return TOMTOM_API_KEY ? raw.replaceAll(TOMTOM_API_KEY, '[REDACTED]') : raw;
+  return redactSecrets(text, getTomTomKey());
 }
 
 /**
@@ -516,7 +595,7 @@ function getLiveStateSnapshot(nowMs = Date.now()) {
   const freshness = computeFreshness({
     lastSuccessAt: liveState.lastSuccessAt,
     lastAttemptFailed,
-    tomtomConfigured: Boolean(TOMTOM_API_KEY),
+    tomtomConfigured: Boolean(getTomTomKey()),
     hasAttemptedRefresh,
     nowMs
   });
@@ -524,7 +603,7 @@ function getLiveStateSnapshot(nowMs = Date.now()) {
   liveState.lastSuccessAt = freshness.lastSuccessAt;
   liveState.stale = freshness.stale;
   liveState.staleSources = freshness.staleSources;
-  liveState.tomtomConfigured = Boolean(TOMTOM_API_KEY);
+  liveState.tomtomConfigured = Boolean(getTomTomKey());
   return liveState;
 }
 
@@ -535,7 +614,7 @@ function recomputePredictions() {
     liveState.weather,
     stations
   );
-  liveState.tomtomConfigured = Boolean(TOMTOM_API_KEY);
+  liveState.tomtomConfigured = Boolean(getTomTomKey());
 }
 
 async function refreshLiveState({ forceFlow = false, forceIncidents = false, forceWeather = false } = {}) {
@@ -544,6 +623,7 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
   refreshInFlight = (async () => {
     const now = Date.now();
     const tasks = [];
+    const hasKey = Boolean(getTomTomKey());
 
     if (forceWeather || now - lastWeatherFetchMs >= WEATHER_POLL_INTERVAL_MS || !liveState.weather) {
       tasks.push(
@@ -563,7 +643,7 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
     }
 
     if (
-      TOMTOM_API_KEY &&
+      hasKey &&
       (forceFlow || now - lastFlowFetchMs >= FLOW_POLL_INTERVAL_MS || liveState.junctions.length === 0)
     ) {
       tasks.push(
@@ -594,7 +674,7 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
     }
 
     if (
-      TOMTOM_API_KEY &&
+      hasKey &&
       (forceIncidents || now - lastIncidentsFetchMs >= INCIDENTS_POLL_INTERVAL_MS)
     ) {
       tasks.push(
@@ -628,17 +708,34 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
   return refreshInFlight;
 }
 
-// ── Socket.IO Lifecycle ──
+// ── Socket.IO Lifecycle (per-IP cap) ──
+const socketCountsByIp = new Map();
+io.use((socket, next) => {
+  const ip = String(socket.handshake.address || 'unknown');
+  const count = socketCountsByIp.get(ip) || 0;
+  if (count >= MAX_SOCKETS_PER_IP) {
+    return next(new Error('Too many concurrent connections from this IP'));
+  }
+  socketCountsByIp.set(ip, count + 1);
+  socket.once('disconnect', () => {
+    const nextCount = (socketCountsByIp.get(ip) || 1) - 1;
+    if (nextCount <= 0) socketCountsByIp.delete(ip);
+    else socketCountsByIp.set(ip, nextCount);
+  });
+  return next();
+});
+
 io.on('connection', (socket) => {
   socket.emit('traffic:state', getLiveStateSnapshot());
 
+  const hasKey = Boolean(getTomTomKey());
   const shouldRefreshFlow =
-    Boolean(TOMTOM_API_KEY) &&
+    hasKey &&
     (!liveState.lastSuccessAt.flow || Date.now() - lastFlowFetchMs > FLOW_POLL_INTERVAL_MS);
   const shouldRefreshWeather =
     !liveState.lastSuccessAt.weather || Date.now() - lastWeatherFetchMs > WEATHER_POLL_INTERVAL_MS;
   const shouldRefreshIncidents =
-    Boolean(TOMTOM_API_KEY) &&
+    hasKey &&
     (!liveState.lastSuccessAt.incidents ||
       Date.now() - lastIncidentsFetchMs > INCIDENTS_POLL_INTERVAL_MS);
 
@@ -651,12 +748,18 @@ io.on('connection', (socket) => {
   }
 });
 
+// ── Rate Limiters ──
+const healthLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: 'health' });
+const tileLimiter = createRateLimiter({ windowMs: 60_000, max: 300, name: 'tiles' });
+const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 40, name: 'search' });
+const routeLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'route' });
+
 // ── Routes ──
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', healthLimiter, (_req, res) => {
   const snap = getLiveStateSnapshot();
   res.json({
     status: 'ok',
-    tomtomConfigured: Boolean(TOMTOM_API_KEY),
+    tomtomConfigured: Boolean(getTomTomKey()),
     updatedAt: snap.updatedAt,
     lastSuccessAt: snap.lastSuccessAt,
     stale: snap.stale,
@@ -664,127 +767,129 @@ app.get('/api/health', (_req, res) => {
     activeClients: io.engine.clientsCount,
     monitoredJunctions: monitoredJunctions.length,
     alertsCount: snap.predictions.length,
-    weatherLoaded: Boolean(snap.weather)
+    weatherLoaded: Boolean(snap.weather),
+    metrics: {
+      p95LatencyMs: latencyTracker.p95Ms(),
+      trafficTileCache: tileCache.stats(),
+      basemapTileCache: basemapTileCache.stats(),
+      upstreamToday: upstreamBudget.snapshot()
+    }
   });
 });
 
-app.get('/tiles/basemap/:z/:x/:y.png', async (req, res) => {
-  const z = Number(req.params.z);
-  const x = Number(req.params.x);
-  const y = Number(req.params.y);
-
-  if (!isValidTileCoord(z, x, y)) {
-    return res.status(400).json({ error: 'Invalid tile coordinates' });
+app.get('/tiles/basemap/:z/:x/:y.png', tileLimiter, async (req, res) => {
+  const paramsParsed = tileParamsSchema.safeParse(req.params);
+  const queryParsed = tileQuerySchema.safeParse(req.query);
+  if (!paramsParsed.success || !queryParsed.success) {
+    return res.status(400).json({ error: 'Invalid tile coordinates or parameters' });
   }
 
-  if (!TOMTOM_API_KEY) {
+  const key = getTomTomKey();
+  if (!key) {
     return res.status(204).end();
   }
 
-  const theme = req.query.theme === 'dark' ? 'dark' : 'light';
+  const { z, x, y } = paramsParsed.data;
+  const theme = queryParsed.data.theme === 'dark' ? 'dark' : 'light';
   const style = theme === 'dark' ? 'night' : 'main';
   const cacheKey = `${theme}/${z}/${x}/${y}`;
-  const cached = basemapTileCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=600');
-    return res.send(cached.buffer);
-  }
 
   try {
-    const upstreamUrl =
-      `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
-      `?tileSize=512&view=IN&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
-    const upstream = await fetch(upstreamUrl, {
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
-    });
-
-    if (!upstream.ok) {
-      const errText = redactKey(await upstream.text().catch(() => ''));
-      console.warn('TomTom basemap tile error:', upstream.status, errText);
-      return res.status(upstream.status === 404 ? 204 : 502).end();
-    }
-
-    const buffer = Buffer.from(await upstream.arrayBuffer());
-    if (basemapTileCache.size >= BASEMAP_CACHE_MAX_ENTRIES) {
-      const oldestKey = basemapTileCache.keys().next().value;
-      if (oldestKey !== undefined) basemapTileCache.delete(oldestKey);
-    }
-    basemapTileCache.set(cacheKey, {
-      buffer,
-      expiresAt: Date.now() + BASEMAP_CACHE_TTL_MS
-    });
+    const { value: buffer } = await basemapTileCache.dedupeFetch(
+      cacheKey,
+      async () => {
+        if (!upstreamBudget.tryConsume('tomtomTile', 1)) {
+          const err = new Error('Daily TomTom tile quota exceeded');
+          err.statusCode = 503;
+          throw err;
+        }
+        const upstreamUrl =
+          `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
+          `?tileSize=512&view=IN&key=${encodeURIComponent(key)}`;
+        const upstream = await safeFetch(upstreamUrl, { timeoutMs: UPSTREAM_TIMEOUT_MS }, fetchImpl);
+        if (!upstream.ok) {
+          const errText = redactKey(await upstream.text().catch(() => ''));
+          console.warn('TomTom basemap tile error:', upstream.status, errText);
+          const err = new Error(`Upstream HTTP ${upstream.status}`);
+          err.statusCode = upstream.status === 404 ? 204 : 502;
+          throw err;
+        }
+        return Buffer.from(await upstream.arrayBuffer());
+      },
+      BASEMAP_CACHE_TTL_MS
+    );
 
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'public, max-age=600');
     return res.send(buffer);
-  } catch (_) {
-    return res.status(502).end();
+  } catch (err) {
+    const status = Number(err?.statusCode) || 502;
+    return res.status(status).end();
   }
 });
 
-app.get('/tiles/traffic/:z/:x/:y.png', async (req, res) => {
-  const z = Number(req.params.z);
-  const x = Number(req.params.x);
-  const y = Number(req.params.y);
-
-  if (!isValidTileCoord(z, x, y)) {
-    return res.status(400).json({ error: 'Invalid tile coordinates' });
+app.get('/tiles/traffic/:z/:x/:y.png', tileLimiter, async (req, res) => {
+  const paramsParsed = tileParamsSchema.safeParse(req.params);
+  const queryParsed = tileQuerySchema.safeParse(req.query);
+  if (!paramsParsed.success || !queryParsed.success) {
+    return res.status(400).json({ error: 'Invalid tile coordinates or parameters' });
   }
 
-  if (!TOMTOM_API_KEY) {
+  const key = getTomTomKey();
+  if (!key) {
     return res.status(204).end();
   }
 
-  const theme = req.query.theme === 'dark' ? 'dark' : 'light';
+  const { z, x, y } = paramsParsed.data;
+  const theme = queryParsed.data.theme === 'dark' ? 'dark' : 'light';
   const style = theme === 'dark' ? 'relative0-dark' : 'relative0';
   const cacheKey = `${theme}/${z}/${x}/${y}`;
-  const cached = tileCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=120');
-    return res.send(cached.buffer);
-  }
 
   try {
-    const upstreamUrl =
-      `https://api.tomtom.com/traffic/map/4/tile/flow/${style}/${z}/${x}/${y}.png` +
-      `?tileSize=512&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
-    const upstream = await fetch(upstreamUrl, {
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
-    });
-
-    if (!upstream.ok) {
-      const errText = redactKey(await upstream.text().catch(() => ''));
-      console.warn('TomTom tile error:', upstream.status, errText);
-      return res.status(upstream.status === 404 ? 204 : 502).end();
-    }
-
-    const buffer = Buffer.from(await upstream.arrayBuffer());
-    if (tileCache.size >= TILE_CACHE_MAX_ENTRIES) {
-      const oldestKey = tileCache.keys().next().value;
-      if (oldestKey !== undefined) tileCache.delete(oldestKey);
-    }
-    tileCache.set(cacheKey, {
-      buffer,
-      expiresAt: Date.now() + TILE_CACHE_TTL_MS
-    });
+    const { value: buffer } = await tileCache.dedupeFetch(
+      cacheKey,
+      async () => {
+        if (!upstreamBudget.tryConsume('tomtomTile', 1)) {
+          const err = new Error('Daily TomTom tile quota exceeded');
+          err.statusCode = 503;
+          throw err;
+        }
+        const upstreamUrl =
+          `https://api.tomtom.com/traffic/map/4/tile/flow/${style}/${z}/${x}/${y}.png` +
+          `?tileSize=512&key=${encodeURIComponent(key)}`;
+        const upstream = await safeFetch(upstreamUrl, { timeoutMs: UPSTREAM_TIMEOUT_MS }, fetchImpl);
+        if (!upstream.ok) {
+          const errText = redactKey(await upstream.text().catch(() => ''));
+          console.warn('TomTom tile error:', upstream.status, errText);
+          const err = new Error(`Upstream HTTP ${upstream.status}`);
+          err.statusCode = upstream.status === 404 ? 204 : 502;
+          throw err;
+        }
+        return Buffer.from(await upstream.arrayBuffer());
+      },
+      TILE_CACHE_TTL_MS
+    );
 
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'public, max-age=120');
     return res.send(buffer);
-  } catch (_) {
-    return res.status(502).end();
+  } catch (err) {
+    const status = Number(err?.statusCode) || 502;
+    return res.status(status).end();
   }
 });
 
-app.get('/api/search', async (req, res) => {
-  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-  if (q.length < 2 || q.length > 100) {
-    return res.status(400).json({ error: 'Query must be between 2 and 100 characters', results: [] });
+app.get('/api/search', searchLimiter, async (req, res) => {
+  const parsed = searchQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Invalid search query: q must be 2-100 characters with no extra fields',
+      results: []
+    });
   }
 
-  if (!TOMTOM_API_KEY) {
+  const key = getTomTomKey();
+  if (!key) {
     return res.status(503).json({
       error: 'TOMTOM_API_KEY is not configured on the server',
       tomtomConfigured: false,
@@ -792,10 +897,18 @@ app.get('/api/search', async (req, res) => {
     });
   }
 
+  if (!upstreamBudget.tryConsume('tomtomNonTile', 1)) {
+    return res.status(503).json({
+      error: 'Daily upstream quota guard reached',
+      results: []
+    });
+  }
+
+  const { q } = parsed.data;
   try {
     const url =
       `https://api.tomtom.com/search/2/search/${encodeURIComponent(q)}.json` +
-      `?key=${encodeURIComponent(TOMTOM_API_KEY)}` +
+      `?key=${encodeURIComponent(key)}` +
       `&lat=${NAGPUR_CENTER.lat}&lon=${NAGPUR_CENTER.lng}&radius=25000&countrySet=IN&limit=6`;
 
     const data = await fetchJson(url);
@@ -811,15 +924,17 @@ app.get('/api/search', async (req, res) => {
       .filter(Boolean);
 
     return res.json({ results });
-  } catch (_) {
+  } catch (err) {
+    console.warn('Search failed:', redactKey(err.message));
     return res.status(502).json({ error: 'Place search service unavailable', results: [] });
   }
 });
 
 async function fetchTomTomRoute(fromLat, fromLng, toLat, toLng, routeType) {
+  const key = getTomTomKey();
   const url =
     `https://api.tomtom.com/routing/1/calculateRoute/${fromLat},${fromLng}:${toLat},${toLng}/json` +
-    `?key=${encodeURIComponent(TOMTOM_API_KEY)}` +
+    `?key=${encodeURIComponent(key)}` +
     `&traffic=true&travelMode=car&routeType=${routeType}`;
 
   const data = await fetchJson(url);
@@ -840,72 +955,116 @@ async function fetchTomTomRoute(fromLat, fromLng, toLat, toLng, routeType) {
   };
 }
 
-app.get('/api/route', async (req, res) => {
-  const fromLat = Number(req.query.fromLat);
-  const fromLng = Number(req.query.fromLng);
-  const toLat = Number(req.query.toLat);
-  const toLng = Number(req.query.toLng);
-
-  const valid =
-    Number.isFinite(fromLat) &&
-    Number.isFinite(fromLng) &&
-    Number.isFinite(toLat) &&
-    Number.isFinite(toLng) &&
-    fromLat >= -90 &&
-    fromLat <= 90 &&
-    toLat >= -90 &&
-    toLat <= 90 &&
-    fromLng >= -180 &&
-    fromLng <= 180 &&
-    toLng >= -180 &&
-    toLng <= 180;
-
-  if (!valid) {
-    return res.status(400).json({ error: 'Valid fromLat, fromLng, toLat, and toLng are required' });
+app.get('/api/route', routeLimiter, async (req, res) => {
+  const parsed = routeQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Valid Nagpur coordinates (fromLat, fromLng, toLat, toLng) are required'
+    });
   }
 
-  if (!TOMTOM_API_KEY) {
+  const key = getTomTomKey();
+  if (!key) {
     return res.status(503).json({
       error: 'TOMTOM_API_KEY is not configured on the server',
       tomtomConfigured: false
     });
   }
 
+  if (!upstreamBudget.tryConsume('tomtomNonTile', 2)) {
+    return res.status(503).json({ error: 'Daily upstream quota guard reached' });
+  }
+
+  const { fromLat, fromLng, toLat, toLng } = parsed.data;
   try {
     const [fastest, shortest] = await Promise.all([
       fetchTomTomRoute(fromLat, fromLng, toLat, toLng, 'fastest'),
       fetchTomTomRoute(fromLat, fromLng, toLat, toLng, 'shortest')
     ]);
     return res.json({ fastest, shortest });
-  } catch (_) {
+  } catch (err) {
+    console.warn('Routing failed:', redactKey(err.message));
     return res.status(502).json({ error: 'Routing service unavailable' });
   }
 });
 
+let pollTimers = [];
+
 function startPollingLoops() {
-  setInterval(() => {
-    if (io.engine.clientsCount > 0) {
-      refreshLiveState({ forceFlow: true });
-    }
-  }, FLOW_POLL_INTERVAL_MS);
+  pollTimers.push(
+    setInterval(() => {
+      if (io.engine.clientsCount > 0) {
+        refreshLiveState({ forceFlow: true });
+      }
+    }, FLOW_POLL_INTERVAL_MS),
+    setInterval(() => {
+      if (io.engine.clientsCount > 0) {
+        refreshLiveState({ forceIncidents: true });
+      }
+    }, INCIDENTS_POLL_INTERVAL_MS),
+    setInterval(() => {
+      if (io.engine.clientsCount > 0) {
+        refreshLiveState({ forceWeather: true });
+      }
+    }, WEATHER_POLL_INTERVAL_MS)
+  );
+}
 
-  setInterval(() => {
-    if (io.engine.clientsCount > 0) {
-      refreshLiveState({ forceIncidents: true });
-    }
-  }, INCIDENTS_POLL_INTERVAL_MS);
+function setupGracefulShutdown() {
+  const shutdown = (signal) => {
+    console.log(`Received ${signal}; shutting down gracefully...`);
+    for (const timer of pollTimers) clearInterval(timer);
+    pollTimers = [];
+    io.close();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 5000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
 
-  setInterval(() => {
-    if (io.engine.clientsCount > 0) {
-      refreshLiveState({ forceWeather: true });
-    }
-  }, WEATHER_POLL_INTERVAL_MS);
+function setTestOverrides({ fetch: customFetch, config: customConfig } = {}) {
+  if (customFetch) fetchImpl = customFetch;
+  if (customConfig) activeConfig = { ...activeConfig, ...customConfig };
+}
+
+function resetStateForTests() {
+  fetchImpl = globalThis.fetch;
+  activeConfig = loadConfig();
+  tileCache.clear();
+  basemapTileCache.clear();
+  upstreamBudget.reset();
+  latencyTracker.reset();
+  healthLimiter.reset();
+  tileLimiter.reset();
+  searchLimiter.reset();
+  routeLimiter.reset();
+  junctionHistory.clear();
+  liveState.updatedAt = null;
+  liveState.lastSuccessAt = { flow: null, incidents: null, weather: null };
+  liveState.stale = false;
+  liveState.staleSources = [];
+  liveState.tomtomConfigured = Boolean(getTomTomKey());
+  liveState.weather = null;
+  liveState.junctions = [];
+  liveState.incidents = [];
+  liveState.predictions = [];
+  lastAttemptFailed.flow = false;
+  lastAttemptFailed.incidents = false;
+  lastAttemptFailed.weather = false;
+  hasAttemptedRefresh = false;
+  lastFlowFetchMs = 0;
+  lastIncidentsFetchMs = 0;
+  lastWeatherFetchMs = 0;
 }
 
 if (require.main === module) {
   startPollingLoops();
+  setupGracefulShutdown();
   server.listen(PORT, () => {
-    console.log(`NGP-TRAFFIC listening on http://localhost:${PORT} (TomTom configured: ${Boolean(TOMTOM_API_KEY)})`);
+    console.log(
+      `NGP-TRAFFIC listening on http://localhost:${PORT} (TomTom configured: ${Boolean(getTomTomKey())})`
+    );
   });
 }
 
@@ -920,5 +1079,10 @@ module.exports = {
   haversineMeters,
   findNearestPoliceStation,
   describeWeatherCode,
-  extractIncidentPoint
+  extractIncidentPoint,
+  setTestOverrides,
+  resetStateForTests,
+  upstreamBudget,
+  tileCache,
+  basemapTileCache
 };

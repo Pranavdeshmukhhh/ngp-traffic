@@ -13,15 +13,6 @@
     weather: 30 * 60 * 1000
   };
 
-  function escapeHtml(value) {
-    return String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
   function formatRelativeTime(isoString) {
     if (!isoString) return 'Waiting for update';
     const diffSec = Math.max(0, Math.floor((Date.now() - new Date(isoString).getTime()) / 1000));
@@ -295,6 +286,41 @@
     }
   }
 
+  function buildPopupEl(title, lines) {
+    const wrap = document.createElement('div');
+    const titleEl = document.createElement('div');
+    titleEl.className = 'map-popup-title';
+    titleEl.textContent = title;
+    wrap.appendChild(titleEl);
+
+    lines.forEach((line, idx) => {
+      if (!line) return;
+      const lineEl = document.createElement('div');
+      lineEl.className = idx === 0 ? 'map-popup-meta' : 'map-popup-meta map-popup-sub';
+      lineEl.textContent = line;
+      wrap.appendChild(lineEl);
+    });
+    return wrap;
+  }
+
+  function createShieldIcon() {
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('width', '13');
+    svg.setAttribute('height', '13');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.75');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('d', 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z');
+    svg.appendChild(p);
+    return svg;
+  }
+
   function renderIncidents() {
     incidentsLayerGroup.clearLayers();
     const incidents = Array.isArray(latestState.incidents) ? latestState.incidents : [];
@@ -310,11 +336,10 @@
       });
 
       const delayMin = inc.delaySec > 0 ? `${Math.round(inc.delaySec / 60)}m delay` : 'Active incident';
-      const corridor = inc.from ? `${escapeHtml(inc.from)}${inc.to ? ' to ' + escapeHtml(inc.to) : ''}` : 'Nagpur corridor';
+      const corridor = inc.from ? `${inc.from}${inc.to ? ` to ${inc.to}` : ''}` : 'Nagpur corridor';
 
-      marker.bindPopup(
-        `<div class="map-popup-title">${escapeHtml(inc.description || 'Traffic Incident')}</div>` +
-        `<div class="map-popup-meta">${corridor} · ${escapeHtml(delayMin)}</div>`
+      marker.bindPopup(() =>
+        buildPopupEl(inc.description || 'Traffic Incident', [`${corridor} · ${delayMin}`])
       );
       marker.addTo(incidentsLayerGroup);
     }
@@ -335,8 +360,13 @@
     drawerOpenCount.textContent = String(predictions.length);
 
     if (predictions.length === 0) {
-      alertsList.innerHTML =
-        '<div class="alerts-empty"><p>Traffic flowing smoothly across monitored Nagpur junctions.</p></div>';
+      alertsList.replaceChildren();
+      const empty = document.createElement('div');
+      empty.className = 'alerts-empty';
+      const p = document.createElement('p');
+      p.textContent = 'Traffic flowing smoothly across monitored Nagpur junctions.';
+      empty.appendChild(p);
+      alertsList.appendChild(empty);
       return;
     }
 
@@ -344,14 +374,13 @@
 
     for (const alert of predictions) {
       const stationLine = alert.nearestStation
-        ? `<div class="map-popup-meta" style="margin-top:4px;">Nearest: ${escapeHtml(alert.nearestStation.shortName)} (${alert.nearestStation.distanceKm} km)</div>`
+        ? `Nearest: ${alert.nearestStation.shortName} (${alert.nearestStation.distanceKm} km)`
         : '';
-
-      const popupHtml =
-        `<div class="map-popup-title">${escapeHtml(alert.name)}</div>` +
-        `<div class="map-popup-meta">${escapeHtml(alert.badge)} · Score ${alert.severityScore}/100 · ${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h</div>` +
-        `<div class="map-popup-meta" style="margin-top:3px;">${escapeHtml(alert.reason)}</div>` +
-        stationLine;
+      const popupLines = [
+        `${alert.badge} · Score ${alert.severityScore}/100 · ${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h`,
+        alert.reason,
+        stationLine
+      ];
 
       let marker = null;
       if (alert.severity === 'HIGH') {
@@ -364,10 +393,10 @@
 
         marker = L.marker([alert.lat, alert.lng], { icon: pulseIcon });
         marker.bindTooltip(
-          `${escapeHtml(alert.name)} &middot; ${alert.currentSpeed} km/h &middot; ${escapeHtml(alert.badge)}`,
+          `${alert.name} · ${alert.currentSpeed} km/h · ${alert.badge}`,
           { direction: 'top', offset: [0, -10] }
         );
-        marker.bindPopup(popupHtml);
+        marker.bindPopup(() => buildPopupEl(alert.name, popupLines));
         marker.addTo(alertsLayerGroup);
         alertMarkersById.set(alert.id, marker);
       }
@@ -376,28 +405,45 @@
       card.type = 'button';
       card.className = 'alert-card';
 
-      const stationHtml = alert.nearestStation
-        ? `<div class="alert-station">
-             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-             </svg>
-             <span>${escapeHtml(alert.nearestStation.shortName)} &middot; ${alert.nearestStation.distanceKm} km</span>
-           </div>`
-        : '';
+      const top = document.createElement('div');
+      top.className = 'alert-card-top';
+      const junctionEl = document.createElement('span');
+      junctionEl.className = 'alert-junction';
+      junctionEl.textContent = alert.name;
+      const badgeEl = document.createElement('span');
+      badgeEl.className = `alert-badge ${alert.category}`;
+      badgeEl.textContent = alert.badge;
+      top.append(junctionEl, badgeEl);
 
+      const metaRow = document.createElement('div');
+      metaRow.className = 'alert-meta-row';
+      const scoreEl = document.createElement('span');
+      scoreEl.className = 'alert-score';
+      scoreEl.textContent = `Score ${alert.severityScore}/100`;
       const trendKey = alert.trend || 'stable';
-      card.innerHTML =
-        `<div class="alert-card-top">
-           <span class="alert-junction">${escapeHtml(alert.name)}</span>
-           <span class="alert-badge ${escapeHtml(alert.category)}">${escapeHtml(alert.badge)}</span>
-         </div>
-         <div class="alert-meta-row">
-           <span class="alert-score">Score ${alert.severityScore}/100</span>
-           <span class="trend-badge ${escapeHtml(trendKey)}">${formatTrendLabel(trendKey)}</span>
-         </div>
-         <div class="alert-speed">${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h</div>
-         <div class="alert-reason">${escapeHtml(alert.reason)}</div>
-         ${stationHtml}`;
+      const trendEl = document.createElement('span');
+      trendEl.className = `trend-badge ${trendKey}`;
+      trendEl.textContent = formatTrendLabel(trendKey);
+      metaRow.append(scoreEl, trendEl);
+
+      const speedEl = document.createElement('div');
+      speedEl.className = 'alert-speed';
+      speedEl.textContent = `${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h`;
+
+      const reasonEl = document.createElement('div');
+      reasonEl.className = 'alert-reason';
+      reasonEl.textContent = alert.reason;
+
+      card.append(top, metaRow, speedEl, reasonEl);
+
+      if (alert.nearestStation) {
+        const stationDiv = document.createElement('div');
+        stationDiv.className = 'alert-station';
+        const stationText = document.createElement('span');
+        stationText.textContent = `${alert.nearestStation.shortName} · ${alert.nearestStation.distanceKm} km`;
+        stationDiv.append(createShieldIcon(), stationText);
+        card.appendChild(stationDiv);
+      }
 
       card.addEventListener('click', () => {
         if (!layerAlertsCheckbox.checked) {
@@ -408,15 +454,17 @@
         if (marker) {
           marker.openPopup();
         } else {
-          L.popup().setLatLng([alert.lat, alert.lng]).setContent(popupHtml).openOn(map);
+          L.popup()
+            .setLatLng([alert.lat, alert.lng])
+            .setContent(buildPopupEl(alert.name, popupLines))
+            .openOn(map);
         }
       });
 
       fragment.appendChild(card);
     }
 
-    alertsList.innerHTML = '';
-    alertsList.appendChild(fragment);
+    alertsList.replaceChildren(fragment);
   }
 
   // Update relative timestamps locally every 30s (zero REST polling)
@@ -446,7 +494,7 @@
   async function runPlaceSearch(query, dropdownEl, onSelect) {
     if (query.trim().length < 2) {
       dropdownEl.classList.add('hidden');
-      dropdownEl.innerHTML = '';
+      dropdownEl.replaceChildren();
       return;
     }
 
@@ -457,18 +505,22 @@
 
       if (items.length === 0) {
         dropdownEl.classList.add('hidden');
-        dropdownEl.innerHTML = '';
+        dropdownEl.replaceChildren();
         return;
       }
 
-      dropdownEl.innerHTML = '';
+      dropdownEl.replaceChildren();
       for (const item of items) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'autocomplete-item';
-        btn.innerHTML =
-          `<span class="autocomplete-name">${escapeHtml(item.name)}</span>` +
-          `<span class="autocomplete-address">${escapeHtml(item.address)}</span>`;
+        const nameEl = document.createElement('span');
+        nameEl.className = 'autocomplete-name';
+        nameEl.textContent = item.name;
+        const addrEl = document.createElement('span');
+        addrEl.className = 'autocomplete-address';
+        addrEl.textContent = item.address;
+        btn.append(nameEl, addrEl);
         btn.addEventListener('click', () => {
           dropdownEl.classList.add('hidden');
           onSelect(item);
@@ -525,7 +577,7 @@
         fillColor: '#10B981',
         fillOpacity: 1
       })
-        .bindPopup(`<div class="map-popup-title">Origin</div><div class="map-popup-meta">${escapeHtml(routeState.origin.name)}</div>`)
+        .bindPopup(() => buildPopupEl('Origin', [routeState.origin.name]))
         .addTo(routeLayerGroup);
     }
 
@@ -537,7 +589,7 @@
         fillColor: '#2563EB',
         fillOpacity: 1
       })
-        .bindPopup(`<div class="map-popup-title">Destination</div><div class="map-popup-meta">${escapeHtml(routeState.destination.name)}</div>`)
+        .bindPopup(() => buildPopupEl('Destination', [routeState.destination.name]))
         .addTo(routeLayerGroup);
     }
   }
