@@ -152,7 +152,7 @@
               <span>Traffic Flow</span>
             </label>
             <label class="layer-option">
-              <input id="layer-incidents" type="checkbox" checked />
+              <input id="layer-incidents" type="checkbox" />
               <span>Incidents</span>
             </label>
             <label class="layer-option">
@@ -194,6 +194,14 @@
       </div>
     </div>
   </aside>
+
+  <div class="traffic-legend" aria-label="Live traffic legend">
+    <span class="legend-title">Live Traffic</span>
+    <span class="legend-item"><span class="legend-bar fast"></span>Fast</span>
+    <span class="legend-item"><span class="legend-bar moderate"></span>Moderate</span>
+    <span class="legend-item"><span class="legend-bar slow"></span>Slow</span>
+    <span class="legend-item"><span class="legend-bar closed"></span>Closed</span>
+  </div>
 
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"

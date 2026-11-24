@@ -10,6 +10,7 @@ const path = require('path');
 const {
   app,
   predictDeployments,
+  computeTrend,
   haversineMeters,
   findNearestPoliceStation,
   describeWeatherCode,
@@ -126,7 +127,7 @@ async function run() {
     );
   });
 
-  console.log('\npredictDeployments():');
+  console.log('\npredictDeployments() & False-Positive Guards:');
   const baseJunction = {
     id: 'J001',
     name: 'Variety Square',
@@ -135,15 +136,54 @@ async function run() {
     roadType: 'major_intersection',
     roadClosure: false
   };
+  const emptyHistory = new Map();
 
   await test('Smooth traffic produces zero alerts', () => {
     const res = predictDeployments(
       [{ ...baseJunction, currentSpeed: 42, freeFlowSpeed: 45 }],
       [],
       { precipitation: 0 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(res.length, 0);
+  });
+
+  await test('Full speed (32 vs 32 km/h) with closure 300m away is NOT falsely flagged as Closed', () => {
+    // ~300m north of Variety Square
+    const closure300m = [{ lat: 21.1485, lng: 79.0882, iconCategory: 8, description: 'Side street closed' }];
+    const res = predictDeployments(
+      [{ ...baseJunction, currentSpeed: 32, freeFlowSpeed: 32, roadClosure: false }],
+      closure300m,
+      { precipitation: 0 },
+      stations,
+      emptyHistory
+    );
+    assert.strictEqual(res.length, 0);
+  });
+
+  await test('Free-flow guard skips roadworks within 150m when congestion < 15%, but flags verified accident <= 100m', () => {
+    const roadworks80m = [{ lat: 21.1465, lng: 79.0882, iconCategory: 9, description: 'Minor roadworks' }];
+    const skipped = predictDeployments(
+      [{ ...baseJunction, currentSpeed: 42, freeFlowSpeed: 45 }],
+      roadworks80m,
+      { precipitation: 0 },
+      stations,
+      emptyHistory
+    );
+    assert.strictEqual(skipped.length, 0);
+
+    const accident80m = [{ lat: 21.1465, lng: 79.0882, iconCategory: 1, description: 'Collision' }];
+    const flagged = predictDeployments(
+      [{ ...baseJunction, currentSpeed: 42, freeFlowSpeed: 45 }],
+      accident80m,
+      { precipitation: 0 },
+      stations,
+      emptyHistory
+    );
+    assert.strictEqual(flagged.length, 1);
+    assert.strictEqual(flagged[0].severity, 'HIGH');
+    assert.strictEqual(flagged[0].badge, 'Officer Needed');
   });
 
   await test('Handles edge cases: currentSpeed > freeFlowSpeed and freeFlowSpeed = 0', () => {
@@ -154,7 +194,8 @@ async function run() {
       ],
       [],
       { precipitation: 0 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(res.length, 1);
     assert.strictEqual(res[0].id, 'J_ZERO');
@@ -166,7 +207,8 @@ async function run() {
       [{ ...baseJunction, currentSpeed: 30, freeFlowSpeed: 45, roadClosure: true }],
       [],
       { precipitation: 0 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(res.length, 1);
     assert.strictEqual(res[0].severity, 'HIGH');
@@ -175,24 +217,26 @@ async function run() {
     assert(res[0].nearestStation && res[0].nearestStation.shortName === 'Sitabuldi PS');
   });
 
-  await test('Roadworks incident within 500m triggers Road Clearing Needed (HIGH); >500m is ignored', () => {
-    const nearInc = [{ lat: 21.1462, lng: 79.0884, iconCategory: 9, description: 'Roadworks' }];
-    const farInc = [{ lat: 21.16, lng: 79.11, iconCategory: 9, description: 'Far roadworks' }];
+  await test('Roadworks within 150m with >= 25% congestion triggers Road Clearing Needed (HIGH); >150m is ignored', () => {
+    const nearInc = [{ lat: 21.1466, lng: 79.0882, iconCategory: 9, description: 'Roadworks' }];
+    const farInc = [{ lat: 21.1485, lng: 79.0882, iconCategory: 9, description: 'Far roadworks' }];
 
     const nearRes = predictDeployments(
-      [{ ...baseJunction, currentSpeed: 38, freeFlowSpeed: 45 }],
+      [{ ...baseJunction, currentSpeed: 30, freeFlowSpeed: 45 }],
       nearInc,
       { precipitation: 0 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(nearRes.length, 1);
     assert.strictEqual(nearRes[0].action, 'Road Clearing Needed');
 
     const farRes = predictDeployments(
-      [{ ...baseJunction, currentSpeed: 38, freeFlowSpeed: 45 }],
+      [{ ...baseJunction, currentSpeed: 30, freeFlowSpeed: 45 }],
       farInc,
       { precipitation: 0 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(farRes.length, 0);
   });
@@ -202,7 +246,8 @@ async function run() {
       [{ ...baseJunction, currentSpeed: 20, freeFlowSpeed: 45 }],
       [],
       { precipitation: 6.2 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(highRainRes.length, 1);
     assert.strictEqual(highRainRes[0].severity, 'HIGH');
@@ -212,32 +257,10 @@ async function run() {
       [{ ...baseJunction, currentSpeed: 30, freeFlowSpeed: 45 }],
       [],
       { precipitation: 6.2 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(lightCongestionRes.length, 0);
-  });
-
-  await test('Accident/breakdown within 500m or congestion >= 60% triggers Traffic Officer Needed (HIGH)', () => {
-    const accRes = predictDeployments(
-      [{ ...baseJunction, currentSpeed: 38, freeFlowSpeed: 45 }],
-      [{ lat: 21.1459, lng: 79.0885, iconCategory: 1, description: 'Accident' }],
-      { precipitation: 0 },
-      stations
-    );
-    assert.strictEqual(accRes.length, 1);
-    assert.strictEqual(accRes[0].severity, 'HIGH');
-    assert.strictEqual(accRes[0].badge, 'Officer Needed');
-
-    const jamRes = predictDeployments(
-      [{ ...baseJunction, currentSpeed: 15, freeFlowSpeed: 45 }],
-      [],
-      { precipitation: 0 },
-      stations
-    );
-    assert.strictEqual(jamRes.length, 1);
-    assert.strictEqual(jamRes[0].severity, 'HIGH');
-    assert.strictEqual(jamRes[0].action, 'Traffic Officer Needed');
-    assert(jamRes[0].nearestStation);
   });
 
   await test('Congestion 40%-59% triggers Standby / Monitor (MEDIUM) without station dispatch', () => {
@@ -245,7 +268,8 @@ async function run() {
       [{ ...baseJunction, currentSpeed: 25, freeFlowSpeed: 45 }],
       [],
       { precipitation: 0 },
-      stations
+      stations,
+      emptyHistory
     );
     assert.strictEqual(res.length, 1);
     assert.strictEqual(res[0].severity, 'MEDIUM');
@@ -253,21 +277,60 @@ async function run() {
     assert.strictEqual(res[0].nearestStation, null);
   });
 
-  await test('Alerts sort HIGH before MEDIUM and by congestionPct descending', () => {
+  await test('Composite severityScore (0-100) sorts alerts descending and tracks trend', () => {
+    const hist = new Map([
+      ['HIGH_DELAY', [30, 50, 70]],
+      ['MED_IMPROVING', [65, 55, 45]],
+      ['HIGH_STABLE', [62, 64, 65]]
+    ]);
+    assert.strictEqual(computeTrend([30, 50, 70]), 'worsening');
+    assert.strictEqual(computeTrend([65, 55, 45]), 'improving');
+    assert.strictEqual(computeTrend([62, 64, 65]), 'stable');
+
     const res = predictDeployments(
       [
-        { ...baseJunction, id: 'MED', name: 'Med', currentSpeed: 24, freeFlowSpeed: 45 },
-        { ...baseJunction, id: 'HIGH_65', name: 'High65', currentSpeed: 16, freeFlowSpeed: 45 },
-        { ...baseJunction, id: 'HIGH_80', name: 'High80', currentSpeed: 9, freeFlowSpeed: 45 }
+        {
+          ...baseJunction,
+          id: 'MED_IMPROVING',
+          name: 'Med',
+          currentSpeed: 25,
+          freeFlowSpeed: 45,
+          currentTravelTime: 80,
+          freeFlowTravelTime: 60
+        },
+        {
+          ...baseJunction,
+          id: 'HIGH_STABLE',
+          name: 'HighStable',
+          currentSpeed: 16,
+          freeFlowSpeed: 45,
+          currentTravelTime: 90,
+          freeFlowTravelTime: 60
+        },
+        {
+          ...baseJunction,
+          id: 'HIGH_DELAY',
+          name: 'HighDelay',
+          currentSpeed: 14,
+          freeFlowSpeed: 45,
+          currentTravelTime: 360,
+          freeFlowTravelTime: 60
+        }
       ],
-      [],
-      { precipitation: 0 },
-      stations
+      [{ lat: 21.1459, lng: 79.0883, iconCategory: 1, description: 'Accident' }],
+      { precipitation: 3.5 },
+      stations,
+      hist
     );
     assert.deepStrictEqual(
       res.map((r) => r.id),
-      ['HIGH_80', 'HIGH_65', 'MED']
+      ['HIGH_DELAY', 'HIGH_STABLE', 'MED_IMPROVING']
     );
+    assert(res[0].severityScore > res[1].severityScore);
+    assert(res[1].severityScore > res[2].severityScore);
+    assert.strictEqual(res[0].trend, 'worsening');
+    assert.strictEqual(res[1].trend, 'stable');
+    assert.strictEqual(res[2].trend, 'improving');
   });
 
   console.log('\nHTTP Endpoints:');
@@ -289,9 +352,12 @@ async function run() {
       assert('alertsCount' in body);
     });
 
-    await test('GET /tiles/traffic/abc/0/0.png returns 400 for invalid tile coords', async () => {
-      const res = await fetch(`${baseUrl}/tiles/traffic/abc/0/0.png`);
-      assert.strictEqual(res.status, 400);
+    await test('GET /tiles/traffic/abc/0/0.png returns 400 and ?theme=dark is accepted', async () => {
+      const badRes = await fetch(`${baseUrl}/tiles/traffic/abc/0/0.png`);
+      assert.strictEqual(badRes.status, 400);
+
+      const darkRes = await fetch(`${baseUrl}/tiles/traffic/13/5897/3585.png?theme=dark`);
+      assert([200, 204, 502].includes(darkRes.status), `Unexpected status: ${darkRes.status}`);
     });
 
     await test('Static assets serve 200 and deleted simulation.html returns 404', async () => {

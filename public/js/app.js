@@ -3,8 +3,8 @@
 
   const NAGPUR_CENTER = [21.1458, 79.0882];
   const BASEMAPS = {
-    light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+    light: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    dark: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
   };
 
   function escapeHtml(value) {
@@ -38,18 +38,25 @@
   const savedTheme = localStorage.getItem('ngp_theme') === 'dark' ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', savedTheme);
 
+  let tileVersion = Date.now();
+  let lastTileRefreshMs = tileVersion;
+
+  function buildTrafficTileUrl(theme, version) {
+    return `/tiles/traffic/{z}/{x}/{y}.png?theme=${encodeURIComponent(theme)}&v=${version}`;
+  }
+
   let baseLayer = L.tileLayer(BASEMAPS[savedTheme], {
-    attribution: '&copy; OpenStreetMap &copy; CARTO',
-    subdomains: 'abcd',
+    attribution: '&copy; OpenStreetMap contributors',
+    className: 'basemap-tiles',
     maxZoom: 19
   }).addTo(map);
 
-  const trafficFlowLayer = L.tileLayer('/tiles/traffic/{z}/{x}/{y}.png', {
+  const trafficFlowLayer = L.tileLayer(buildTrafficTileUrl(savedTheme, tileVersion), {
     maxZoom: 19,
-    opacity: 0.78
+    opacity: 0.9
   }).addTo(map);
 
-  const incidentsLayerGroup = L.layerGroup().addTo(map);
+  const incidentsLayerGroup = L.layerGroup();
   const alertsLayerGroup = L.layerGroup().addTo(map);
   const routeLayerGroup = L.layerGroup().addTo(map);
 
@@ -123,11 +130,15 @@
       map.removeLayer(baseLayer);
     }
     baseLayer = L.tileLayer(BASEMAPS[theme], {
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
-      subdomains: 'abcd',
+      attribution: '&copy; OpenStreetMap contributors',
+      className: 'basemap-tiles',
       maxZoom: 19
     }).addTo(map);
     baseLayer.bringToBack();
+
+    tileVersion = Date.now();
+    lastTileRefreshMs = tileVersion;
+    trafficFlowLayer.setUrl(buildTrafficTileUrl(theme, tileVersion));
   }
 
   applyTheme(savedTheme);
@@ -236,6 +247,12 @@
     }
   }
 
+  function formatTrendLabel(trend) {
+    if (trend === 'worsening') return 'Rising';
+    if (trend === 'improving') return 'Clearing';
+    return 'Stable';
+  }
+
   function renderAlerts() {
     alertsLayerGroup.clearLayers();
     alertMarkersById.clear();
@@ -253,28 +270,34 @@
     const fragment = document.createDocumentFragment();
 
     for (const alert of predictions) {
-      const color = alert.severity === 'HIGH' ? '#EF4444' : '#F59E0B';
-      const marker = L.circleMarker([alert.lat, alert.lng], {
-        radius: alert.severity === 'HIGH' ? 8 : 6,
-        color: '#FFFFFF',
-        weight: 2,
-        fillColor: color,
-        fillOpacity: 0.95
-      });
-
       const stationLine = alert.nearestStation
         ? `<div class="map-popup-meta" style="margin-top:4px;">Nearest: ${escapeHtml(alert.nearestStation.shortName)} (${alert.nearestStation.distanceKm} km)</div>`
         : '';
 
-      marker.bindPopup(
+      const popupHtml =
         `<div class="map-popup-title">${escapeHtml(alert.name)}</div>` +
-        `<div class="map-popup-meta">${escapeHtml(alert.badge)} · ${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h</div>` +
+        `<div class="map-popup-meta">${escapeHtml(alert.badge)} · Score ${alert.severityScore}/100 · ${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h</div>` +
         `<div class="map-popup-meta" style="margin-top:3px;">${escapeHtml(alert.reason)}</div>` +
-        stationLine
-      );
+        stationLine;
 
-      marker.addTo(alertsLayerGroup);
-      alertMarkersById.set(alert.id, marker);
+      let marker = null;
+      if (alert.severity === 'HIGH') {
+        const pulseIcon = L.divIcon({
+          className: 'alert-pulse-wrapper',
+          html: '<span class="alert-pulse-ring"></span><span class="alert-pulse-core"></span>',
+          iconSize: [20, 20],
+          iconAnchor: [10, 10]
+        });
+
+        marker = L.marker([alert.lat, alert.lng], { icon: pulseIcon });
+        marker.bindTooltip(
+          `${escapeHtml(alert.name)} &middot; ${alert.currentSpeed} km/h &middot; ${escapeHtml(alert.badge)}`,
+          { direction: 'top', offset: [0, -10] }
+        );
+        marker.bindPopup(popupHtml);
+        marker.addTo(alertsLayerGroup);
+        alertMarkersById.set(alert.id, marker);
+      }
 
       const card = document.createElement('button');
       card.type = 'button';
@@ -289,10 +312,15 @@
            </div>`
         : '';
 
+      const trendKey = alert.trend || 'stable';
       card.innerHTML =
         `<div class="alert-card-top">
            <span class="alert-junction">${escapeHtml(alert.name)}</span>
            <span class="alert-badge ${escapeHtml(alert.category)}">${escapeHtml(alert.badge)}</span>
+         </div>
+         <div class="alert-meta-row">
+           <span class="alert-score">Score ${alert.severityScore}/100</span>
+           <span class="trend-badge ${escapeHtml(trendKey)}">${formatTrendLabel(trendKey)}</span>
          </div>
          <div class="alert-speed">${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h</div>
          <div class="alert-reason">${escapeHtml(alert.reason)}</div>
@@ -304,7 +332,11 @@
           alertsLayerGroup.addTo(map);
         }
         map.flyTo([alert.lat, alert.lng], 15, { duration: 0.6 });
-        marker.openPopup();
+        if (marker) {
+          marker.openPopup();
+        } else {
+          L.popup().setLatLng([alert.lat, alert.lng]).setContent(popupHtml).openOn(map);
+        }
       });
 
       fragment.appendChild(card);
@@ -325,6 +357,14 @@
     renderStatusBar();
     renderIncidents();
     renderAlerts();
+
+    const now = Date.now();
+    if (now - lastTileRefreshMs >= 120000) {
+      lastTileRefreshMs = now;
+      tileVersion = now;
+      const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
+      trafficFlowLayer.setUrl(buildTrafficTileUrl(activeTheme, tileVersion));
+    }
   });
 
   // ── Place Search Autocomplete ──

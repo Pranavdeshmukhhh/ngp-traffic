@@ -65,6 +65,14 @@ body {
   z-index: 1;
 }
 
+.basemap-tiles {
+  filter: saturate(0.35) brightness(1.03) contrast(0.95);
+}
+
+[data-theme="dark"] .basemap-tiles {
+  filter: invert(1) hue-rotate(180deg) saturate(0.3) brightness(0.88) contrast(0.95);
+}
+
 /* Setup Banner */
 .setup-banner {
   position: fixed;
@@ -652,6 +660,46 @@ body {
   margin-bottom: 3px;
 }
 
+.alert-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.alert-score {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.trend-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.trend-badge.worsening {
+  color: var(--severe);
+  background: var(--severe-bg);
+}
+
+.trend-badge.improving {
+  color: var(--clear);
+  background: var(--clear-bg);
+}
+
+.trend-badge.stable {
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
 .alert-reason {
   font-size: 12px;
   color: var(--text-muted);
@@ -672,6 +720,98 @@ body {
 .alert-station svg {
   color: var(--text-muted);
   flex-shrink: 0;
+}
+
+/* Pulsing HIGH Alert Map Markers */
+.alert-pulse-wrapper {
+  position: relative;
+  width: 20px;
+  height: 20px;
+}
+
+.alert-pulse-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.35);
+  animation: alert-pulse 2s ease-out infinite;
+}
+
+.alert-pulse-core {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--severe);
+  border: 2px solid #FFFFFF;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+@keyframes alert-pulse {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  75%, 100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+/* Bottom-Left Traffic Legend Pill */
+.traffic-legend {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 870;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow-md);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.legend-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  padding-right: 4px;
+  border-right: 1px solid var(--border);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-bar {
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.legend-bar.fast {
+  background: var(--clear);
+}
+
+.legend-bar.moderate {
+  background: var(--moderate);
+}
+
+.legend-bar.slow {
+  background: var(--severe);
+}
+
+.legend-bar.closed {
+  background: #7F1D1D;
 }
 
 /* Leaflet Overrides */
@@ -725,8 +865,31 @@ body {
   font-size: 12px;
 }
 
+.leaflet-tooltip {
+  background: var(--surface) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  box-shadow: var(--shadow-md) !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  padding: 4px 8px !important;
+}
+
+.leaflet-tooltip-top::before {
+  border-top-color: var(--border) !important;
+}
+
 /* Mobile Responsive Bottom Sheet */
 @media (max-width: 768px) {
+  .traffic-legend {
+    bottom: 12px;
+    left: 12px;
+    gap: 7px;
+    padding: 6px 10px;
+    font-size: 11px;
+  }
   .route-panel {
     top: 64px;
     left: 12px;

@@ -31,6 +31,11 @@ const UPSTREAM_TIMEOUT_MS = 8000;
 
 const ROADWORKS_OR_CLOSURE_CODES = new Set([7, 8, 9]);
 const ACCIDENT_OR_BREAKDOWN_CODES = new Set([1, 14]);
+const INCIDENT_RADIUS_M = 150;
+const ACCIDENT_FREEFLOW_RADIUS_M = 100;
+const HISTORY_LIMIT = 3;
+
+const junctionHistory = new Map();
 
 const junctions = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'data', 'nagpur-junctions.json'), 'utf8')
@@ -120,10 +125,27 @@ function extractIncidentPoint(geometry) {
 }
 
 /**
+ * Compute congestion trend from the last 2-3 snapshots for a junction.
+ */
+function computeTrend(snapshots) {
+  if (!Array.isArray(snapshots) || snapshots.length < 2) return 'stable';
+  const delta = snapshots[snapshots.length - 1] - snapshots[0];
+  if (delta >= 8) return 'worsening';
+  if (delta <= -8) return 'improving';
+  return 'stable';
+}
+
+/**
  * Predict officer and road-clearing deployment advisories from live flow,
  * active incidents, rainfall, and Nagpur police station locations.
  */
-function predictDeployments(junctionFlows, incidents, weather, stationList) {
+function predictDeployments(
+  junctionFlows,
+  incidents,
+  weather,
+  stationList,
+  historyMap = junctionHistory
+) {
   if (!Array.isArray(junctionFlows) || junctionFlows.length === 0) return [];
 
   const activeIncidents = Array.isArray(incidents) ? incidents : [];
@@ -142,8 +164,19 @@ function predictDeployments(junctionFlows, incidents, weather, stationList) {
 
     const nearbyIncidents = activeIncidents.filter((inc) => {
       if (!Number.isFinite(inc?.lat) || !Number.isFinite(inc?.lng)) return false;
-      return haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= 500;
+      return haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= INCIDENT_RADIUS_M;
     });
+
+    const verifiedAccidentWithin100m = nearbyIncidents.find(
+      (inc) =>
+        Number(inc.iconCategory) === 1 &&
+        haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= ACCIDENT_FREEFLOW_RADIUS_M
+    );
+
+    // Free-flow guard: never flag full-speed junctions unless roadClosure or verified accident <= 100m
+    if (congestionPct < 15 && j.roadClosure !== true && !verifiedAccidentWithin100m) {
+      continue;
+    }
 
     const clearingIncident = nearbyIncidents.find((inc) =>
       ROADWORKS_OR_CLOSURE_CODES.has(Number(inc.iconCategory))
@@ -160,7 +193,7 @@ function predictDeployments(junctionFlows, incidents, weather, stationList) {
 
     if (
       j.roadClosure === true ||
-      Boolean(clearingIncident) ||
+      (Boolean(clearingIncident) && congestionPct >= 25) ||
       (rainfallMm >= 5 && congestionPct >= 50)
     ) {
       severity = 'HIGH';
@@ -170,17 +203,21 @@ function predictDeployments(junctionFlows, incidents, weather, stationList) {
       if (j.roadClosure === true) {
         reason = 'Active road closure reported on corridor';
       } else if (clearingIncident) {
-        reason = clearingIncident.description || 'Roadworks or lane closure within 500 m';
+        reason = clearingIncident.description || 'Roadworks or lane closure within 150 m';
       } else {
         reason = `Heavy rain (${rainfallMm.toFixed(1)} mm/hr) with ${congestionPct}% congestion`;
       }
-    } else if (Boolean(officerIncident) || congestionPct >= 60) {
+    } else if (
+      (congestionPct < 15 ? Boolean(verifiedAccidentWithin100m) : Boolean(officerIncident)) ||
+      congestionPct >= 60
+    ) {
       severity = 'HIGH';
       category = 'officer';
       badge = 'Officer Needed';
       action = 'Traffic Officer Needed';
-      if (officerIncident) {
-        reason = officerIncident.description || 'Accident or breakdown within 500 m';
+      const activeOfficerInc = congestionPct < 15 ? verifiedAccidentWithin100m : officerIncident;
+      if (activeOfficerInc) {
+        reason = activeOfficerInc.description || 'Accident or breakdown within 150 m';
       } else {
         reason = `Severe congestion (${congestionPct}% below free-flow speed)`;
       }
@@ -194,7 +231,23 @@ function predictDeployments(junctionFlows, incidents, weather, stationList) {
 
     if (!severity) continue;
 
-    const entry = {
+    const delaySec = Math.max(
+      0,
+      Number(j.currentTravelTime || 0) - Number(j.freeFlowTravelTime || 0)
+    );
+    const speedPart = 0.55 * congestionPct;
+    const delayPart = Math.min(1, delaySec / 300) * 25;
+    const incidentPart = nearbyIncidents.length > 0 || j.roadClosure === true ? 15 : 0;
+    const rainPart = rainfallMm >= 5 ? 10 : rainfallMm >= 3 ? 5 : 0;
+    const severityScore = Math.max(
+      0,
+      Math.min(100, Math.round(speedPart + delayPart + incidentPart + rainPart))
+    );
+
+    const snapshots = historyMap instanceof Map ? historyMap.get(j.id) || [] : [];
+    const trend = computeTrend(snapshots);
+
+    predictions.push({
       id: j.id,
       name: j.name,
       lat: j.lat,
@@ -203,6 +256,8 @@ function predictDeployments(junctionFlows, incidents, weather, stationList) {
       currentSpeed: Math.round(currentSpeed),
       freeFlowSpeed: Math.round(freeFlowSpeed),
       congestionPct,
+      severityScore,
+      trend,
       roadClosure: Boolean(j.roadClosure),
       severity,
       category,
@@ -211,12 +266,11 @@ function predictDeployments(junctionFlows, incidents, weather, stationList) {
       reason,
       nearestStation:
         severity === 'HIGH' ? findNearestPoliceStation(j.lat, j.lng, stationList) : null
-    };
-
-    predictions.push(entry);
+    });
   }
 
   predictions.sort((a, b) => {
+    if (b.severityScore !== a.severityScore) return b.severityScore - a.severityScore;
     if (a.severity !== b.severity) return a.severity === 'HIGH' ? -1 : 1;
     return b.congestionPct - a.congestionPct;
   });
@@ -399,6 +453,12 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
         fetchAllJunctionFlows()
           .then((flows) => {
             if (flows.length > 0) {
+              for (const flow of flows) {
+                const list = junctionHistory.get(flow.id) || [];
+                list.push(flow.congestionPct);
+                if (list.length > HISTORY_LIMIT) list.shift();
+                junctionHistory.set(flow.id, list);
+              }
               liveState.junctions = flows;
               lastFlowFetchMs = Date.now();
             }
@@ -485,7 +545,9 @@ app.get('/tiles/traffic/:z/:x/:y.png', async (req, res) => {
     return res.status(204).end();
   }
 
-  const cacheKey = `${z}/${x}/${y}`;
+  const theme = req.query.theme === 'dark' ? 'dark' : 'light';
+  const style = theme === 'dark' ? 'relative0-dark' : 'relative0';
+  const cacheKey = `${theme}/${z}/${x}/${y}`;
   const cached = tileCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     res.set('Content-Type', 'image/png');
@@ -495,8 +557,8 @@ app.get('/tiles/traffic/:z/:x/:y.png', async (req, res) => {
 
   try {
     const upstreamUrl =
-      `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/${z}/${x}/${y}.png` +
-      `?key=${encodeURIComponent(TOMTOM_API_KEY)}`;
+      `https://api.tomtom.com/traffic/map/4/tile/flow/${style}/${z}/${x}/${y}.png` +
+      `?thickness=10&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
     const upstream = await fetch(upstreamUrl, {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
@@ -659,6 +721,7 @@ module.exports = {
   server,
   io,
   predictDeployments,
+  computeTrend,
   haversineMeters,
   findNearestPoliceStation,
   describeWeatherCode,
