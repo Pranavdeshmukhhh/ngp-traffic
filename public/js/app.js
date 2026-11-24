@@ -78,16 +78,31 @@
 
   const incidentsLayerGroup = L.layerGroup();
   const alertsLayerGroup = L.layerGroup().addTo(map);
+  const hotspotsLayerGroup = L.layerGroup().addTo(map);
   const routeLayerGroup = L.layerGroup().addTo(map);
+
+  // ── i18n State ──
+  const supportedLangs = ['en', 'hi', 'mr'];
+  const savedLang = localStorage.getItem('ngp_lang');
+  let currentLang = supportedLangs.includes(savedLang) ? savedLang : 'en';
+
+  function tr(key) {
+    return typeof NGP_I18N !== 'undefined' ? NGP_I18N.t(currentLang, key) : key;
+  }
 
   // ── State ──
   let latestState = {
     updatedAt: null,
-    lastSuccessAt: { flow: null, incidents: null, weather: null },
+    lastSuccessAt: { flow: null, incidents: null, weather: null, airQuality: null },
     stale: false,
     staleSources: [],
+    features: { weatherRisk: true },
     tomtomConfigured: true,
     weather: null,
+    weatherExtended: null,
+    airQuality: null,
+    roadRiskAdvisories: [],
+    observedHotspots: [],
     junctions: [],
     incidents: [],
     predictions: []
@@ -106,12 +121,20 @@
 
   // ── DOM Elements ──
   const setupBanner = document.getElementById('setup-banner');
+  const roadRiskBanner = document.getElementById('road-risk-banner');
   const liveIndicator = document.getElementById('live-indicator');
+  const brandLiveLabel = document.getElementById('brand-live-label');
   const updatedText = document.getElementById('updated-text');
   const staleBadge = document.getElementById('stale-badge');
   const sourcesFreshness = document.getElementById('sources-freshness');
   const weatherSep = document.getElementById('weather-sep');
+  const weatherToggleBtn = document.getElementById('weather-toggle-btn');
   const weatherText = document.getElementById('weather-text');
+  const weatherPanel = document.getElementById('weather-panel');
+  const weatherCloseBtn = document.getElementById('weather-close-btn');
+  const weatherPanelTitle = document.getElementById('weather-panel-title');
+  const weatherPanelBody = document.getElementById('weather-panel-body');
+  const langSelect = document.getElementById('lang-select');
 
   const themeToggle = document.getElementById('theme-toggle');
   const iconMoon = document.getElementById('icon-moon');
@@ -122,6 +145,16 @@
   const layerFlowCheckbox = document.getElementById('layer-flow');
   const layerIncidentsCheckbox = document.getElementById('layer-incidents');
   const layerAlertsCheckbox = document.getElementById('layer-alerts');
+  const layerHotspotsCheckbox = document.getElementById('layer-hotspots');
+  const layerFlowLabel = document.getElementById('layer-flow-label');
+  const layerIncidentsLabel = document.getElementById('layer-incidents-label');
+  const layerAlertsLabel = document.getElementById('layer-alerts-label');
+  const layerHotspotsLabel = document.getElementById('layer-hotspots-label');
+  const layerFlowMeta = document.getElementById('layer-flow-meta');
+  const layerIncidentsMeta = document.getElementById('layer-incidents-meta');
+  const layerAlertsMeta = document.getElementById('layer-alerts-meta');
+  const layerHotspotsMeta = document.getElementById('layer-hotspots-meta');
+  const hotspotsEmptyNote = document.getElementById('hotspots-empty-note');
 
   const alertsDrawer = document.getElementById('alerts-drawer');
   const drawerOpenBtn = document.getElementById('drawer-open-btn');
@@ -129,7 +162,11 @@
   const drawerOpenCount = document.getElementById('drawer-open-count');
   const alertsCount = document.getElementById('alerts-count');
   const alertsList = document.getElementById('alerts-list');
+  const liveAlertsTitle = document.getElementById('live-alerts-title');
+  const estimateNoteLabel = document.getElementById('estimate-note-label');
+  const alertsOpenLabel = document.getElementById('alerts-open-label');
 
+  const routeTitleLabel = document.getElementById('route-title-label');
   const originInput = document.getElementById('origin-input');
   const destInput = document.getElementById('dest-input');
   const originDropdown = document.getElementById('origin-dropdown');
@@ -137,13 +174,23 @@
   const swapBtn = document.getElementById('swap-btn');
   const clearRouteBtn = document.getElementById('clear-route-btn');
   const routeStatus = document.getElementById('route-status');
+  const routeRainWarning = document.getElementById('route-rain-warning');
   const routeCards = document.getElementById('route-cards');
   const cardFastest = document.getElementById('card-fastest');
   const cardShortest = document.getElementById('card-shortest');
+  const fastestLabel = document.getElementById('fastest-label');
+  const shortestLabel = document.getElementById('shortest-label');
   const fastestTimeEl = document.getElementById('fastest-time');
   const fastestMetaEl = document.getElementById('fastest-meta');
   const shortestTimeEl = document.getElementById('shortest-time');
   const shortestMetaEl = document.getElementById('shortest-meta');
+
+  const legendTitleLabel = document.getElementById('legend-title-label');
+  const legendFast = document.getElementById('legend-fast');
+  const legendModerate = document.getElementById('legend-moderate');
+  const legendSlow = document.getElementById('legend-slow');
+  const legendClosed = document.getElementById('legend-closed');
+  const legendHotspot = document.getElementById('legend-hotspot');
 
   // ── Theme Controls ──
   function applyTheme(theme) {
@@ -170,11 +217,68 @@
     applyTheme(current === 'dark' ? 'light' : 'dark');
   });
 
+  function applyLanguage(lang) {
+    currentLang = supportedLangs.includes(lang) ? lang : 'en';
+    localStorage.setItem('ngp_lang', currentLang);
+    document.documentElement.lang = currentLang;
+    langSelect.value = currentLang;
+
+    brandLiveLabel.textContent = tr('brandLive');
+    routeTitleLabel.textContent = tr('routeTitle');
+    clearRouteBtn.textContent = tr('clear');
+    originInput.placeholder = tr('originPlaceholder');
+    destInput.placeholder = tr('destPlaceholder');
+    fastestLabel.textContent = tr('fastestLive');
+    shortestLabel.textContent = tr('shortest');
+    liveAlertsTitle.textContent = tr('liveAlerts');
+    estimateNoteLabel.textContent = tr('estimateNote');
+    alertsOpenLabel.textContent = tr('layerAlerts');
+    staleBadge.textContent = tr('staleBadge');
+    weatherPanelTitle.textContent = tr('weatherTitle');
+    layerFlowLabel.textContent = tr('layerFlow');
+    layerIncidentsLabel.textContent = tr('layerIncidents');
+    layerAlertsLabel.textContent = tr('layerAlerts');
+    layerHotspotsLabel.textContent = tr('layerHotspots');
+    hotspotsEmptyNote.textContent = tr('hotspotsEmpty');
+    legendTitleLabel.textContent = tr('liveTrafficLegend');
+    legendFast.textContent = tr('fast');
+    legendModerate.textContent = tr('moderate');
+    legendSlow.textContent = tr('slow');
+    legendClosed.textContent = tr('closed');
+    legendHotspot.textContent = tr('hotspotLegend');
+
+    renderStatusBar();
+    renderRoadRiskBanner();
+    renderWeatherPanel();
+    renderAlerts();
+  }
+
+  langSelect.addEventListener('change', () => applyLanguage(langSelect.value));
+
+  weatherToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isHidden = weatherPanel.classList.toggle('hidden');
+    weatherToggleBtn.setAttribute('aria-expanded', String(!isHidden));
+    if (!isHidden) {
+      layersPopover.classList.add('hidden');
+      layersBtn.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  weatherCloseBtn.addEventListener('click', () => {
+    weatherPanel.classList.add('hidden');
+    weatherToggleBtn.setAttribute('aria-expanded', 'false');
+  });
+
   // ── Layers Popover ──
   layersBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const expanded = layersPopover.classList.toggle('hidden') === false;
     layersBtn.setAttribute('aria-expanded', String(expanded));
+    if (expanded) {
+      weatherPanel.classList.add('hidden');
+      weatherToggleBtn.setAttribute('aria-expanded', 'false');
+    }
   });
 
   document.addEventListener('click', (e) => {
@@ -182,11 +286,23 @@
       layersPopover.classList.add('hidden');
       layersBtn.setAttribute('aria-expanded', 'false');
     }
+    if (!weatherPanel.contains(e.target) && !weatherToggleBtn.contains(e.target)) {
+      weatherPanel.classList.add('hidden');
+      weatherToggleBtn.setAttribute('aria-expanded', 'false');
+    }
     if (!originInput.contains(e.target) && !originDropdown.contains(e.target)) {
       originDropdown.classList.add('hidden');
     }
     if (!destInput.contains(e.target) && !destDropdown.contains(e.target)) {
       destDropdown.classList.add('hidden');
+    }
+  });
+
+  layerHotspotsCheckbox.addEventListener('change', () => {
+    if (layerHotspotsCheckbox.checked) {
+      hotspotsLayerGroup.addTo(map);
+    } else {
+      map.removeLayer(hotspotsLayerGroup);
     }
   });
 
@@ -252,6 +368,168 @@
     });
   }
 
+  function renderRoadRiskBanner() {
+    const enabled = latestState.features?.weatherRisk !== false;
+    const advisories = Array.isArray(latestState.roadRiskAdvisories)
+      ? latestState.roadRiskAdvisories
+      : [];
+    if (!enabled || advisories.length === 0) {
+      roadRiskBanner.classList.add('hidden');
+      roadRiskBanner.replaceChildren();
+      return;
+    }
+
+    const hasHigh = advisories.some((a) => a.severity === 'HIGH');
+    roadRiskBanner.classList.toggle('high', hasHigh);
+    roadRiskBanner.replaceChildren();
+
+    for (const adv of advisories.slice(0, 2)) {
+      const pill = document.createElement('span');
+      pill.className = 'risk-pill';
+      const dot = document.createElement('span');
+      dot.className = `risk-dot ${adv.severity}`;
+      const label = document.createElement('span');
+      label.textContent = tr(adv.key);
+      const detail = document.createElement('span');
+      detail.className = 'risk-detail';
+      detail.textContent = `· ${adv.detail}`;
+      pill.append(dot, label, detail);
+      roadRiskBanner.appendChild(pill);
+    }
+    roadRiskBanner.classList.remove('hidden');
+  }
+
+  function makeWeatherStat(label, val) {
+    const box = document.createElement('div');
+    box.className = 'weather-stat';
+    const l = document.createElement('div');
+    l.className = 'weather-stat-label';
+    l.textContent = label;
+    const v = document.createElement('div');
+    v.className = 'weather-stat-val';
+    v.textContent = val;
+    box.append(l, v);
+    return box;
+  }
+
+  function renderWeatherPanel() {
+    weatherPanelBody.replaceChildren();
+    if (latestState.features?.weatherRisk === false) {
+      const msg = document.createElement('div');
+      msg.className = 'weather-stale-banner';
+      msg.textContent = tr('weatherDisabled');
+      weatherPanelBody.appendChild(msg);
+      return;
+    }
+
+    const staleWeather =
+      Array.isArray(latestState.staleSources) &&
+      (latestState.staleSources.includes('weather') ||
+        latestState.staleSources.includes('airQuality'));
+    if (staleWeather) {
+      const staleNote = document.createElement('div');
+      staleNote.className = 'weather-stale-banner';
+      staleNote.textContent = tr('weatherStaleNote');
+      weatherPanelBody.appendChild(staleNote);
+    }
+
+    const ext = latestState.weatherExtended;
+    const aq = latestState.airQuality;
+    if (!ext?.current) {
+      const waiting = document.createElement('div');
+      waiting.className = 'layer-meta';
+      waiting.textContent = tr('waitingTelemetry');
+      weatherPanelBody.appendChild(waiting);
+      return;
+    }
+
+    const cur = ext.current;
+    const grid = document.createElement('div');
+    grid.className = 'weather-grid';
+    grid.append(
+      makeWeatherStat(tr('feelsLike'), `${cur.apparentTempC}°C (${cur.temperatureC}°C)`),
+      makeWeatherStat(tr('rainProb'), `${cur.precipProbPct}% · ${cur.precipitationMm} mm/h`),
+      makeWeatherStat(tr('wind'), `${cur.windSpeedKmh} km/h`),
+      makeWeatherStat(
+        tr('visibility'),
+        cur.visibilityM !== null ? `${(cur.visibilityM / 1000).toFixed(1)} km` : '--'
+      )
+    );
+    if (aq) {
+      grid.append(
+        makeWeatherStat(tr('aqiEstimateLabel'), `${aq.usAqi ?? '--'} (${aq.category})`),
+        makeWeatherStat(tr('pm25Label'), aq.pm25 !== null ? `${aq.pm25} µg/m³` : '--')
+      );
+    }
+    weatherPanelBody.appendChild(grid);
+
+    if (Array.isArray(ext.next6h) && ext.next6h.length > 0) {
+      const title6h = document.createElement('div');
+      title6h.className = 'weather-section-title';
+      title6h.textContent = tr('next6h');
+      const row6h = document.createElement('div');
+      row6h.className = 'weather-6h-row';
+      for (const h of ext.next6h) {
+        const chip = document.createElement('div');
+        chip.className = 'weather-hour-chip';
+        const hh = h.time.slice(11, 16);
+        chip.textContent = `${hh} · ${h.tempC}°C · ${h.precipProbPct}%`;
+        row6h.appendChild(chip);
+      }
+      weatherPanelBody.append(title6h, row6h);
+    }
+
+    if (Array.isArray(ext.daily7d) && ext.daily7d.length > 0) {
+      const title7d = document.createElement('div');
+      title7d.className = 'weather-section-title';
+      title7d.textContent = tr('forecast7d');
+      const list7d = document.createElement('div');
+      list7d.className = 'weather-7d-list';
+      for (const d of ext.daily7d) {
+        const row = document.createElement('div');
+        row.className = 'weather-day-row';
+        const left = document.createElement('span');
+        left.textContent = `${d.date.slice(5)} · ${d.condition}`;
+        const right = document.createElement('span');
+        right.textContent = `${d.tempMinC}°/${d.tempMaxC}°C · ${d.precipProbMaxPct}%`;
+        row.append(left, right);
+        list7d.appendChild(row);
+      }
+      weatherPanelBody.append(title7d, list7d);
+    }
+
+    const foot = document.createElement('div');
+    foot.className = 'weather-source-foot';
+    foot.textContent = 'Weather & CAMS Air Quality estimate: Open-Meteo (CC BY 4.0)';
+    weatherPanelBody.appendChild(foot);
+  }
+
+  function renderObservedHotspots() {
+    hotspotsLayerGroup.clearLayers();
+    const hotspots = Array.isArray(latestState.observedHotspots)
+      ? latestState.observedHotspots
+      : [];
+    hotspotsEmptyNote.classList.toggle('hidden', hotspots.length > 0);
+    layerHotspotsMeta.textContent = `Observed history · ${hotspots.length}`;
+
+    for (const h of hotspots) {
+      const marker = L.circleMarker([h.lat, h.lng], {
+        radius: 9,
+        color: '#0284C7',
+        weight: 2,
+        fillColor: '#0284C7',
+        fillOpacity: 0.22
+      });
+      marker.bindPopup(() =>
+        buildPopupEl(h.name, [
+          `Observed rain slowdown (${h.observations} samples >= 5 mm/hr)`,
+          `Rain median: ${h.rainMedianKmh} km/h vs Dry median: ${h.dryMedianKmh} km/h (-${h.dropPct}%)`
+        ])
+      );
+      marker.addTo(hotspotsLayerGroup);
+    }
+  }
+
   function renderStatusBar() {
     setupBanner.classList.toggle('hidden', Boolean(latestState.tomtomConfigured));
     if (latestState.tomtomConfigured === false && !usingOsmFallback) {
@@ -267,7 +545,9 @@
       ? `Flow ${formatShortAge(sources.flow)} · Inc ${formatShortAge(sources.incidents)} · Weather ${formatShortAge(sources.weather)}`
       : `Weather ${formatShortAge(sources.weather)}`;
 
-    updatedText.textContent = latestState.updatedAt ? formatRelativeTime(latestState.updatedAt) : 'No live feed';
+    updatedText.textContent = latestState.updatedAt
+      ? formatRelativeTime(latestState.updatedAt)
+      : tr('noLiveFeed');
     updatedText.title = summaryText;
     liveIndicator.classList.toggle('stale', isStale || !latestState.updatedAt);
     staleBadge.classList.toggle('hidden', !isStale);
@@ -276,13 +556,24 @@
     sourcesFreshness.textContent = summaryText;
     sourcesFreshness.classList.toggle('stale', isStale);
 
-    if (latestState.weather) {
+    layerFlowMeta.textContent = `TomTom · ${formatShortAge(sources.flow)}`;
+    layerIncidentsMeta.textContent = `TomTom v5 · ${formatShortAge(sources.incidents)}`;
+    layerAlertsMeta.textContent = `${tr('estimateNote')} · ${formatShortAge(sources.flow)}`;
+
+    if (latestState.features?.weatherRisk === false) {
+      weatherSep.classList.add('hidden');
+      weatherToggleBtn.classList.add('hidden');
+    } else if (latestState.weather) {
       weatherSep.classList.remove('hidden');
-      weatherText.classList.remove('hidden');
-      weatherText.textContent = `${latestState.weather.temperatureC}°C · ${latestState.weather.condition}`;
+      weatherToggleBtn.classList.remove('hidden');
+      const aqiPart =
+        latestState.airQuality?.usAqi !== null && latestState.airQuality?.usAqi !== undefined
+          ? ` · AQI ${latestState.airQuality.usAqi}`
+          : '';
+      weatherText.textContent = `${latestState.weather.temperatureC}°C · ${latestState.weather.condition}${aqiPart}`;
     } else {
       weatherSep.classList.add('hidden');
-      weatherText.classList.add('hidden');
+      weatherToggleBtn.classList.add('hidden');
     }
   }
 
@@ -346,9 +637,15 @@
   }
 
   function formatTrendLabel(trend) {
-    if (trend === 'worsening') return 'Rising';
-    if (trend === 'improving') return 'Clearing';
-    return 'Stable';
+    if (trend === 'worsening') return tr('trendWorsening');
+    if (trend === 'improving') return tr('trendImproving');
+    return tr('trendStable');
+  }
+
+  function formatBadgeLabel(alert) {
+    if (alert.category === 'clearing') return tr('badgeClearing');
+    if (alert.category === 'officer') return tr('badgeOfficer');
+    return tr('badgeMonitor');
   }
 
   function renderAlerts() {
@@ -364,7 +661,7 @@
       const empty = document.createElement('div');
       empty.className = 'alerts-empty';
       const p = document.createElement('p');
-      p.textContent = 'Traffic flowing smoothly across monitored Nagpur junctions.';
+      p.textContent = tr('smoothTraffic');
       empty.appendChild(p);
       alertsList.appendChild(empty);
       return;
@@ -374,10 +671,11 @@
 
     for (const alert of predictions) {
       const stationLine = alert.nearestStation
-        ? `Nearest: ${alert.nearestStation.shortName} (${alert.nearestStation.distanceKm} km)`
+        ? `${tr('nearestLabel')}: ${alert.nearestStation.shortName} (${alert.nearestStation.distanceKm} km)`
         : '';
+      const badgeLabel = formatBadgeLabel(alert);
       const popupLines = [
-        `${alert.badge} · Score ${alert.severityScore}/100 · ${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h`,
+        `${badgeLabel} · Score ${alert.severityScore}/100 · ${alert.currentSpeed} km/h vs ${alert.freeFlowSpeed} km/h`,
         alert.reason,
         stationLine
       ];
@@ -393,7 +691,7 @@
 
         marker = L.marker([alert.lat, alert.lng], { icon: pulseIcon });
         marker.bindTooltip(
-          `${alert.name} · ${alert.currentSpeed} km/h · ${alert.badge}`,
+          `${alert.name} · ${alert.currentSpeed} km/h · ${badgeLabel}`,
           { direction: 'top', offset: [0, -10] }
         );
         marker.bindPopup(() => buildPopupEl(alert.name, popupLines));
@@ -412,7 +710,7 @@
       junctionEl.textContent = alert.name;
       const badgeEl = document.createElement('span');
       badgeEl.className = `alert-badge ${alert.category}`;
-      badgeEl.textContent = alert.badge;
+      badgeEl.textContent = badgeLabel;
       top.append(junctionEl, badgeEl);
 
       const metaRow = document.createElement('div');
@@ -476,6 +774,9 @@
     if (!state || typeof state !== 'object') return;
     latestState = state;
     renderStatusBar();
+    renderRoadRiskBanner();
+    renderWeatherPanel();
+    renderObservedHotspots();
     renderIncidents();
     renderAlerts();
 
@@ -534,7 +835,10 @@
   }
 
   function wireSearchInput(inputEl, dropdownEl, role) {
+    let activeIndex = -1;
+
     inputEl.addEventListener('input', () => {
+      activeIndex = -1;
       clearTimeout(searchTimer);
       const val = inputEl.value;
       if (role === 'origin') routeState.origin = null;
@@ -545,6 +849,30 @@
           setEndpoint(role, place);
         });
       }, 260);
+    });
+
+    inputEl.addEventListener('keydown', (e) => {
+      const items = Array.from(dropdownEl.querySelectorAll('.autocomplete-item'));
+      if (dropdownEl.classList.contains('hidden') || items.length === 0) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        activeIndex = (activeIndex + 1) % items.length;
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        activeIndex = (activeIndex - 1 + items.length) % items.length;
+      } else if (e.key === 'Enter' && activeIndex >= 0) {
+        e.preventDefault();
+        items[activeIndex].click();
+        return;
+      } else if (e.key === 'Escape') {
+        dropdownEl.classList.add('hidden');
+        return;
+      } else {
+        return;
+      }
+
+      items.forEach((el, idx) => el.classList.toggle('active', idx === activeIndex));
     });
   }
 
@@ -661,6 +989,22 @@
     applyRouteHighlight();
     routeCards.classList.remove('hidden');
 
+    const activeWarnings =
+      routeState.activeRouteType === 'fastest'
+        ? routes.fastest.rainWarnings || []
+        : routes.shortest.rainWarnings || [];
+    const allWarnings =
+      activeWarnings.length > 0
+        ? activeWarnings
+        : routes.fastest.rainWarnings || routes.shortest.rainWarnings || [];
+    if (allWarnings.length > 0) {
+      routeRainWarning.textContent = `${tr('routeRainWarning')} ${allWarnings.map((w) => `${w.name} (${w.rainMedianKmh} km/h)`).join(', ')}`;
+      routeRainWarning.classList.remove('hidden');
+    } else {
+      routeRainWarning.classList.add('hidden');
+      routeRainWarning.textContent = '';
+    }
+
     const bounds = L.latLngBounds([...fastestCoords, ...shortestCoords]);
     if (bounds.isValid()) {
       map.fitBounds(bounds, { padding: [70, 70] });
@@ -758,9 +1102,13 @@
     destInput.value = '';
     routeLayerGroup.clearLayers();
     routeCards.classList.add('hidden');
+    routeRainWarning.classList.add('hidden');
+    routeRainWarning.textContent = '';
     clearRouteBtn.classList.add('hidden');
     setRouteMessage('', false);
   });
+
+  applyLanguage(currentLang);
 
   cardFastest.addEventListener('click', () => {
     routeState.activeRouteType = 'fastest';

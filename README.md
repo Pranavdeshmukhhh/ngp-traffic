@@ -1,75 +1,62 @@
-# NGP-TRAFFIC — Nagpur Live Traffic Intelligence
+# NGP Mobility (NGP-TRAFFIC)
 
-A fast, minimal, real-data live traffic map, dual-route planner, and police deployment advisory dashboard for **Nagpur, India**.
+Real-time Nagpur live traffic intelligence, dual-route planner, weather & road-risk advisories, and police deployment support for **Nagpur, India**.
 
-Powered by **TomTom Traffic, Map Display & Routing APIs** and **Open-Meteo** weather telemetry ([CC BY 4.0](https://open-meteo.com/)) — zero mock data, zero simulation loops, and zero frontend API key exposure.
+Zero mock data, zero simulation loops, and zero frontend API key exposure.
 
-## Screenshots
+## Data Sources & Quota Math
 
-> _Placeholder: Add light/dark desktop and mobile map screenshots or a short walkthrough GIF here._
+| Data Source | Provider & Licence | Poll Frequency / Cache TTL | Max Quota Cost / Day | Failure Behaviour |
+| --- | --- | --- | --- | --- |
+| **Traffic Flow Segments** | TomTom Flow Segment v4 (Freemium / Commercial key) | Every **4 min** for 16 key corridors only while `clients > 0`; paused when idle | `16 × 15/hr × 24h` = **5,760 max** (far lower with active-user gating; guarded by `DAILY_TOMTOM_NON_TILE_BUDGET=2000`) | Preserves last good `lastSuccessAt.flow`, marks `flow` stale, shows `Stale` pill |
+| **Traffic Incidents** | TomTom Incident Details v5 (`78.95,21.05,79.20,21.25`) | Every **12 min** while `clients > 0` | `5/hr × 24h` = **<= 120 calls/day** | Preserves last good `lastSuccessAt.incidents`, marks `incidents` stale |
+| **Traffic & Basemap Tiles** | TomTom Flow Raster (`relative0`/`relative0-dark`) & Map Display (`main`/`night`) | Traffic **120s** LRU (`500` tiles); Basemap **10m** LRU (`800` tiles) + in-flight dedupe | Guarded by `DAILY_TOMTOM_TILE_BUDGET=45000` (50,000/day TomTom free tier); OSM fallback if keyless | `502`/`204` handled cleanly; basemap auto-falls back to OpenStreetMap |
+| **Place Search & Routing** | TomTom Search v2 & Routing v1 (`fastest` + `shortest`) | On-demand (rate-limited `40/min` search, `20/min` route per IP) | Shares `DAILY_TOMTOM_NON_TILE_BUDGET` | Returns `502` or `503` quota guard without leaking secrets |
+| **Weather Forecast (Current, 6h, 7d)** | [Open-Meteo](https://open-meteo.com/) Forecast API (**CC BY 4.0**, non-commercial, keyless) | Every **15 min** while `clients > 0`; TTL **15 min** | **<= 96 calls/day** (10,000/day Open-Meteo free limit) | Preserves last snapshot, marks `weather` stale in UI |
+| **Air Quality (PM2.5, US AQI)** | Open-Meteo / Copernicus CAMS (**CC BY 4.0**, ~45 km model estimate) | Every **30 min** while `clients > 0`; TTL **30 min** | **<= 48 calls/day** (10,000/day free limit) | Marks `airQuality` stale; explicitly labelled as a **CAMS model estimate** |
+| **Observed Waterlogging Hotspots** | Derived internally from stored dry vs. `>= 5 mm/hr` rain junction speed snapshots | Recomputed on flow polls (`data/runtime/rain-observations.json`) | **0 external calls** | Cold start / `< 3` rainy polls honestly returns `[]` with empty-state notice |
 
-## Live Architecture
+## Architecture & Feature Flags
 
-1. **Basemap & Traffic Tile Proxies (`/tiles/basemap/:z/:x/:y.png`, `/tiles/traffic/:z/:x/:y.png`)**
-   - Proxies TomTom Map Display raster basemaps (`main` for light mode, `night` for dark mode, `tileSize=512`, `view=IN`) with a 10-minute bounded in-memory cache (`800` tiles max), falling back cleanly to OpenStreetMap if keyless.
-   - Proxies TomTom Traffic Flow Raster Tiles (`relative0` / `relative0-dark`, `tileSize=512`) on the backend so `TOMTOM_API_KEY` never reaches the browser, with a 120s bounded cache (`500` tiles max) and `Cache-Control: public, max-age=120`.
-2. **Quota-Safe Real-Time Polling + Per-Source Freshness**
-   - **Flow Segment Data**: Polls 16 key Nagpur corridors from `data/nagpur-junctions.json` every 4 minutes **only while active Socket.IO clients are connected**.
-   - **Traffic Incidents v5**: Polls Nagpur bounding box (`78.95,21.05,79.20,21.25`) every 12 minutes while clients are online.
-   - **Open-Meteo Weather**: Polls Nagpur weather (`21.1458, 79.0882`) every 15 minutes (free non-commercial tier, CC BY 4.0, no API key required).
-   - **Freshness Telemetry**: Tracks per-source `lastSuccessAt` (`flow`, `incidents`, `weather`) and computes `stale` + `staleSources` over Socket.IO (`traffic:state`) and `/api/health`. Failed polls never advance `updatedAt`.
-3. **Deployment Advisory Engine (`predictDeployments` — Heuristic Model Estimates)**
-   - **Free-Flow Guard**: Never flags free-flowing junctions (`congestionPct < 15%`) unless `roadClosure === true` or a verified accident (`iconCategory === 1`) is within `100 m`.
-   - **Road Clearing Needed (`HIGH`)**: Active `roadClosure`, roadworks/closure incident within `150 m` with `>= 25%` congestion, or Nagpur rainfall `>= 5 mm/hr` with `>= 50%` congestion.
-   - **Traffic Officer Needed (`HIGH`)**: Accident/breakdown within `150 m` (`100 m` if free-flowing) or `>= 60%` congestion.
-   - **Standby / Monitor (`MEDIUM`)**: `>= 40%` congestion.
-   - Computes a composite `severityScore` (`0–100`) and 3-snapshot `trend` (`worsening`, `improving`, `stable`), and attaches the nearest Nagpur police station (`data/police-stations.json`) via Haversine distance to every `HIGH` alert. Advisories are heuristic estimates for operator assistance.
-4. **Shortest vs. Fastest Live Routing (`/api/search`, `/api/route`)**
-   - Autocomplete search biased to Nagpur (`radius=25000`, `countrySet=IN`).
-   - Parallel TomTom Routing requests comparing **Fastest (Live)** vs. **Shortest** distance routes with live traffic delay.
+- **Deployment Advisory Engine (`predictDeployments` — Heuristic Model Estimates):**
+  - Free-flow guard skips junctions with `congestionPct < 15%` unless `roadClosure === true` or a verified accident (`iconCategory === 1`) is within `100 m`.
+  - Flags `Road Clearing Needed (HIGH)` on `roadClosure === true`, roadworks/closure within `150 m` with `>= 25%` congestion, or rainfall `>= 5 mm/hr` with `>= 50%` congestion.
+  - Flags `Traffic Officer Needed (HIGH)` on accident/breakdown within `150 m` (`100 m` if free-flowing) or `>= 60%` congestion; `Standby / Monitor (MEDIUM)` for `>= 40%` congestion.
+  - Ranks alerts by composite `severityScore` (`0–100`) and 3-snapshot `trend`, attaching the nearest station from `data/police-stations.json`.
+- **Module 1 (`FEATURE_WEATHER_RISK=true`):** Current/6h/7d weather, CAMS PM2.5 + US AQI estimate, road-risk advisories (heavy rain + congestion, low visibility fog, heat index, AQI), empirical `Observed` waterlogging hotspots, rain-aware route warnings, and English/Hindi/Marathi (`en`/`hi`/`mr`) localization.
 
-## Setup
-
-### Prerequisites
-- Node.js `>= 20.12.0`
-- A free [TomTom Developer](https://developer.tomtom.com/) API key (Traffic, Map Display, Search, and Routing products enabled)
-
-### Local Run
+## Setup & Environment Variables
 
 ```bash
 npm install
-```
-
-Set `TOMTOM_API_KEY` in your environment (or a local `.env` file, which is gitignored):
-
-```bash
-# PowerShell
-$env:TOMTOM_API_KEY="your_tomtom_api_key"
+cp .env.example .env
+# Set TOMTOM_API_KEY in .env
 npm start
 ```
 
-Open `http://localhost:3000`.
-
-> If `TOMTOM_API_KEY` is omitted, the server still boots cleanly with Open-Meteo weather + OpenStreetMap fallback tiles and displays a setup banner in the UI.
-
-### Environment Variables
-
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `TOMTOM_API_KEY` | Yes (for live traffic/search/routing/TomTom basemaps) | `""` | Server-only TomTom API key |
+| `TOMTOM_API_KEY` | Recommended | `""` | Server-only TomTom API key |
 | `PORT` | No | `3000` | HTTP server port |
-| `ALLOWED_ORIGIN` | No | `*` | Allowed CORS origin(s), comma-separated |
+| `ALLOWED_ORIGIN` | Yes in `production` | `*` | Comma-separated CORS origin allow-list (fails closed if `*` in production) |
+| `FEATURE_WEATHER_RISK` | No | `true` | Enables/disables Module 1 weather, AQI & hotspot layer |
+| `DAILY_TOMTOM_NON_TILE_BUDGET` | No | `2000` | Daily server circuit-breaker for non-tile TomTom calls |
+| `DAILY_TOMTOM_TILE_BUDGET` | No | `45000` | Daily server circuit-breaker for TomTom tile calls |
 
 ## API Endpoints
 
-- `GET /api/health` — Server status, `tomtomConfigured`, `updatedAt`, per-source `lastSuccessAt`, `stale`, `staleSources`, active Socket.IO clients, alert count
-- `GET /tiles/basemap/:z/:x/:y.png` — Cached TomTom light/dark basemap tile proxy (`?theme=light|dark`)
-- `GET /tiles/traffic/:z/:x/:y.png` — Cached TomTom live traffic flow tile proxy (`?theme=light|dark`)
-- `GET /api/search?q=...` — Nagpur-biased place autocomplete
-- `GET /api/route?fromLat=&fromLng=&toLat=&toLng=` — Parallel fastest & shortest live routes
+- `GET /api/health` — Server status, feature flags, `lastSuccessAt`, `stale`, `staleSources`, `p95LatencyMs`, cache hit rates, and daily upstream counters
+- `GET /api/weather` — Current, 6h & 7d forecast, CAMS air quality estimate, road-risk advisories, and observed waterlogging hotspots
+- `GET /tiles/basemap/:z/:x/:y.png` — LRU-cached TomTom light/dark basemap tile proxy (`z <= 19`, `[0, 2^z)`)
+- `GET /tiles/traffic/:z/:x/:y.png` — LRU-cached TomTom live traffic flow tile proxy
+- `GET /api/search?q=...` — Nagpur-biased place autocomplete (rate-limited `40/min/IP`)
+- `GET /api/route?fromLat=&fromLng=&toLat=&toLng=` — Parallel fastest & shortest Nagpur-bounded routes + rain hotspot warnings (`20/min/IP`)
 
-## Testing
+## Quality Gates
 
 ```bash
-npm test
+npm run lint
+npm run typecheck
+npm run test:coverage
+npm audit --audit-level=moderate
 ```
