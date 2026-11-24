@@ -460,7 +460,8 @@ app.use(
         frameAncestors: ["'none'"]
       }
     },
-    crossOriginEmbedderPolicy: false
+    crossOriginEmbedderPolicy: false,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
   })
 );
 
@@ -762,7 +763,8 @@ io.on('connection', (socket) => {
 
 // ── Rate Limiters ──
 const healthLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: 'health' });
-const tileLimiter = createRateLimiter({ windowMs: 60_000, max: 300, name: 'tiles' });
+const basemapTileLimiter = createRateLimiter({ windowMs: 60_000, max: 600, name: 'basemap-tiles' });
+const trafficTileLimiter = createRateLimiter({ windowMs: 60_000, max: 600, name: 'traffic-tiles' });
 const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 40, name: 'search' });
 const routeLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'route' });
 
@@ -789,7 +791,7 @@ app.get('/api/health', healthLimiter, (_req, res) => {
   });
 });
 
-app.get('/tiles/basemap/:z/:x/:y.png', tileLimiter, async (req, res) => {
+app.get('/tiles/basemap/:z/:x/:y.png', basemapTileLimiter, async (req, res) => {
   const paramsParsed = tileParamsSchema.safeParse(req.params);
   const queryParsed = tileQuerySchema.safeParse(req.query);
   if (!paramsParsed.success || !queryParsed.success) {
@@ -836,7 +838,7 @@ app.get('/tiles/basemap/:z/:x/:y.png', tileLimiter, async (req, res) => {
   }
 });
 
-app.get('/tiles/traffic/:z/:x/:y.png', tileLimiter, async (req, res) => {
+app.get('/tiles/traffic/:z/:x/:y.png', trafficTileLimiter, async (req, res) => {
   const paramsParsed = tileParamsSchema.safeParse(req.params);
   const queryParsed = tileQuerySchema.safeParse(req.query);
   if (!paramsParsed.success || !queryParsed.success) {
@@ -1043,7 +1045,8 @@ function resetStateForTests() {
   upstreamBudget.reset();
   latencyTracker.reset();
   healthLimiter.reset();
-  tileLimiter.reset();
+  basemapTileLimiter.reset();
+  trafficTileLimiter.reset();
   searchLimiter.reset();
   routeLimiter.reset();
   junctionHistory.clear();

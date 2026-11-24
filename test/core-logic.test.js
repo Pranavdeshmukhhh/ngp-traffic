@@ -8,6 +8,11 @@ const path = require('node:path');
 const { LruCache } = require('../src/lru');
 const { loadConfig, redactSecrets, safeFetch } = require('../src/security');
 const {
+  createTileErrorTracker,
+  DEFAULT_TILE_FALLBACK_THRESHOLD,
+  DEFAULT_TILE_FALLBACK_WINDOW_MS
+} = require('../public/js/tile-fallback');
+const {
   predictDeployments,
   computeTrend,
   computeFreshness,
@@ -207,4 +212,63 @@ test('predictDeployments eliminates false positives and ranks by composite sever
   );
   assert.equal(ranked[0].trend, 'worsening');
   assert.equal(ranked[1].trend, 'improving');
+});
+
+test('createTileErrorTracker switches only after threshold errors within sliding window', () => {
+  assert.equal(DEFAULT_TILE_FALLBACK_THRESHOLD, 6);
+  assert.equal(DEFAULT_TILE_FALLBACK_WINDOW_MS, 15_000);
+
+  const tracker = createTileErrorTracker();
+
+  // Single transient error must not switch to fallback
+  assert.equal(tracker.recordError(1_000), false);
+  assert.equal(tracker.isTriggered(), false);
+
+  // Up to 5 errors inside 15s window still do not trigger
+  assert.equal(tracker.recordError(2_000), false);
+  assert.equal(tracker.recordError(3_000), false);
+  assert.equal(tracker.recordError(4_000), false);
+  assert.equal(tracker.recordError(5_000), false);
+  assert.equal(tracker.recentCount(5_000), 5);
+  assert.equal(tracker.isTriggered(), false);
+
+  // 6th error inside 15s triggers fallback once
+  assert.equal(tracker.recordError(6_000), true);
+  assert.equal(tracker.isTriggered(), true);
+
+  // Subsequent errors stay triggered without re-triggering
+  assert.equal(tracker.recordError(6_500), false);
+  assert.equal(tracker.isTriggered(), true);
+
+  tracker.reset();
+  assert.equal(tracker.isTriggered(), false);
+  assert.equal(tracker.recentCount(7_000), 0);
+});
+
+test('createTileErrorTracker expires old errors outside sliding window and validates options', () => {
+  const tracker = createTileErrorTracker({ threshold: 6, windowMs: 15_000 });
+
+  // 5 errors at t = 0..4000ms
+  for (let i = 0; i < 5; i++) {
+    assert.equal(tracker.recordError(i * 1_000), false);
+  }
+
+  // At t = 16000ms, the t = 0 error has aged out (> 15000ms), so 5 remain in window
+  assert.equal(tracker.recordError(16_000), false);
+  assert.equal(tracker.recentCount(16_000), 5);
+  assert.equal(tracker.isTriggered(), false);
+
+  // Another error at t = 16500ms still sees t = 1000..4000 expired if > 15000ms:
+  // t=1000 expired at 16500 (15500 > 15000), so count is t=2000,3000,4000,16000,16500 => 5
+  assert.equal(tracker.recordError(16_500), false);
+  assert.equal(tracker.recentCount(16_500), 5);
+
+  // Immediate burst within the new window hits 6 inside 15s and triggers
+  assert.equal(tracker.recordError(16_600), true);
+  assert.equal(tracker.isTriggered(), true);
+
+  assert.throws(() => createTileErrorTracker({ threshold: 0 }), RangeError);
+  assert.throws(() => createTileErrorTracker({ threshold: 1.5 }), RangeError);
+  assert.throws(() => createTileErrorTracker({ windowMs: 0 }), RangeError);
+  assert.throws(() => createTileErrorTracker({ windowMs: Infinity }), RangeError);
 });

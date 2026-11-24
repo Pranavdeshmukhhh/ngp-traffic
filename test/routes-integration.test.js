@@ -45,6 +45,11 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     assert.equal(csp.includes("script-src 'self' https://unpkg.com"), true);
     assert.equal(csp.includes("'unsafe-inline'") && csp.split('script-src')[1].split(';')[0].includes("'unsafe-inline'"), false);
     assert.equal(res.headers.get('x-powered-by'), null);
+    assert.equal(res.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+
+    const homeRes = await fetch(`${baseUrl}/`);
+    assert.equal(homeRes.status, 200);
+    assert.equal(homeRes.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
 
     const body = await res.json();
     assert.equal(body.status, 'ok');
@@ -178,6 +183,37 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     });
     const badTile = await fetch(`${baseUrl}/tiles/basemap/13/5897/3586.png?theme=light`);
     assert.equal(badTile.status, 502);
+  });
+
+  await t.test('Tile limiters allow >300 req/min/IP per layer without blocking panning', async () => {
+    resetStateForTests();
+    let fetchCount = 0;
+    setTestOverrides({
+      config: { tomtomApiKey: TEST_TOMTOM_KEY },
+      fetch: async () => {
+        fetchCount += 1;
+        return makePngResponse('png-tile-ok');
+      }
+    });
+
+    // Warm basemap cache then issue 305 total basemap tile requests (> old 300/min limit)
+    for (let batch = 0; batch < 305; batch += 25) {
+      const count = Math.min(25, 305 - batch);
+      const responses = await Promise.all(
+        Array.from({ length: count }, () =>
+          fetch(`${baseUrl}/tiles/basemap/13/5897/3585.png?theme=light`)
+        )
+      );
+      for (const tileRes of responses) {
+        assert.equal(tileRes.status, 200);
+      }
+    }
+    assert.equal(fetchCount, 1);
+
+    // Traffic tile route uses an independent limiter
+    const trafficRes = await fetch(`${baseUrl}/tiles/traffic/13/5897/3585.png?theme=light`);
+    assert.equal(trafficRes.status, 200);
+    assert.equal(fetchCount, 2);
   });
 
   await t.test('Rate limiter returns 429 and daily budget guard returns 503', async () => {

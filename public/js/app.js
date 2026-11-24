@@ -43,15 +43,20 @@
   }
 
   let usingOsmFallback = false;
+  let detachBaseLayerListener = null;
+  let baseLayer = null;
 
   function createBaseLayer(theme, forceOsmFallback) {
     usingOsmFallback = Boolean(forceOsmFallback);
     if (usingOsmFallback) {
-      return L.tileLayer(BASEMAPS.osmFallback, {
-        attribution: '&copy; OpenStreetMap contributors &middot; Weather: Open-Meteo (CC BY 4.0)',
-        className: theme === 'dark' ? 'basemap-osm-dark' : 'basemap-osm-light',
-        maxZoom: 19
-      });
+      return {
+        layer: L.tileLayer(BASEMAPS.osmFallback, {
+          attribution: '&copy; OpenStreetMap contributors &middot; Weather: Open-Meteo (CC BY 4.0)',
+          className: theme === 'dark' ? 'basemap-osm-dark' : 'basemap-osm-light',
+          maxZoom: 19
+        }),
+        detach: null
+      };
     }
 
     const layer = L.tileLayer(BASEMAPS[theme], {
@@ -59,17 +64,43 @@
       className: 'basemap-tiles',
       maxZoom: 19
     });
-    layer.once('tileerror', () => {
-      if (usingOsmFallback) return;
-      const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
-      if (baseLayer) map.removeLayer(baseLayer);
-      baseLayer = createBaseLayer(activeTheme, true).addTo(map);
-      baseLayer.bringToBack();
+    const tracker = NGP_TILE_FALLBACK.createTileErrorTracker({
+      threshold: NGP_TILE_FALLBACK.DEFAULT_TILE_FALLBACK_THRESHOLD,
+      windowMs: NGP_TILE_FALLBACK.DEFAULT_TILE_FALLBACK_WINDOW_MS
     });
-    return layer;
+
+    function onTileError() {
+      if (usingOsmFallback || layer !== baseLayer) {
+        layer.off('tileerror', onTileError);
+        return;
+      }
+      if (tracker.recordError()) {
+        layer.off('tileerror', onTileError);
+        const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        setBaseLayer(activeTheme, true);
+      }
+    }
+
+    layer.on('tileerror', onTileError);
+    return {
+      layer,
+      detach: () => layer.off('tileerror', onTileError)
+    };
   }
 
-  let baseLayer = createBaseLayer(savedTheme, false).addTo(map);
+  function setBaseLayer(theme, forceOsmFallback) {
+    if (detachBaseLayerListener) {
+      detachBaseLayerListener();
+      detachBaseLayerListener = null;
+    }
+    if (baseLayer) {
+      map.removeLayer(baseLayer);
+    }
+    const created = createBaseLayer(theme, forceOsmFallback);
+    baseLayer = created.layer.addTo(map);
+    detachBaseLayerListener = created.detach;
+    baseLayer.bringToBack();
+  }
 
   const trafficFlowLayer = L.tileLayer(buildTrafficTileUrl(savedTheme, tileVersion), {
     maxZoom: 19,
@@ -152,11 +183,7 @@
     iconMoon.classList.toggle('hidden', theme === 'dark');
     iconSun.classList.toggle('hidden', theme !== 'dark');
 
-    if (baseLayer) {
-      map.removeLayer(baseLayer);
-    }
-    baseLayer = createBaseLayer(theme, usingOsmFallback || latestState.tomtomConfigured === false).addTo(map);
-    baseLayer.bringToBack();
+    setBaseLayer(theme, usingOsmFallback || latestState.tomtomConfigured === false);
 
     tileVersion = Date.now();
     lastTileRefreshMs = tileVersion;
@@ -256,9 +283,7 @@
     setupBanner.classList.toggle('hidden', Boolean(latestState.tomtomConfigured));
     if (latestState.tomtomConfigured === false && !usingOsmFallback) {
       const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
-      if (baseLayer) map.removeLayer(baseLayer);
-      baseLayer = createBaseLayer(activeTheme, true).addTo(map);
-      baseLayer.bringToBack();
+      setBaseLayer(activeTheme, true);
     }
 
     const isStale = isClientDetectedStale(latestState);
