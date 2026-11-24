@@ -59,17 +59,23 @@ body {
   display: none !important;
 }
 
-#map {
+#map,
+#map.leaflet-container {
   width: 100vw;
   height: 100vh;
   z-index: 1;
+  background: var(--surface-subtle);
 }
 
 .basemap-tiles {
+  filter: none;
+}
+
+.basemap-osm-light {
   filter: saturate(0.35) brightness(1.03) contrast(0.95);
 }
 
-[data-theme="dark"] .basemap-tiles {
+.basemap-osm-dark {
   filter: invert(1) hue-rotate(180deg) saturate(0.3) brightness(0.88) contrast(0.95);
 }
 
@@ -435,6 +441,19 @@ body {
   flex-shrink: 0;
 }
 
+.live-indicator.stale {
+  background: var(--moderate);
+}
+
+.stale-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--moderate);
+  background: var(--moderate-bg);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
 .status-brand {
   font-size: 12.5px;
   font-weight: 600;
@@ -547,6 +566,24 @@ body {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.drawer-subbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.sources-freshness.stale {
+  color: var(--moderate);
+  font-weight: 500;
 }
 
 .drawer-title-group {

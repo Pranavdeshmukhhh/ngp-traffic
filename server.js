@@ -24,9 +24,14 @@ const NAGPUR_BBOX = '78.95,21.05,79.20,21.25';
 
 const TILE_CACHE_TTL_MS = 120 * 1000;
 const TILE_CACHE_MAX_ENTRIES = 500;
+const BASEMAP_CACHE_TTL_MS = 10 * 60 * 1000;
+const BASEMAP_CACHE_MAX_ENTRIES = 800;
 const FLOW_POLL_INTERVAL_MS = 4 * 60 * 1000;
 const INCIDENTS_POLL_INTERVAL_MS = 12 * 60 * 1000;
 const WEATHER_POLL_INTERVAL_MS = 15 * 60 * 1000;
+const FLOW_STALE_MS = 2 * FLOW_POLL_INTERVAL_MS;
+const INCIDENTS_STALE_MS = 2 * INCIDENTS_POLL_INTERVAL_MS;
+const WEATHER_STALE_MS = 2 * WEATHER_POLL_INTERVAL_MS;
 const UPSTREAM_TIMEOUT_MS = 8000;
 
 const ROADWORKS_OR_CLOSURE_CODES = new Set([7, 8, 9]);
@@ -401,8 +406,16 @@ const io = new Server(server, {
 
 // ── Live State & Bounded Tile Cache ──
 const tileCache = new Map();
+const basemapTileCache = new Map();
 const liveState = {
   updatedAt: null,
+  lastSuccessAt: {
+    flow: null,
+    incidents: null,
+    weather: null
+  },
+  stale: false,
+  staleSources: [],
   tomtomConfigured: Boolean(TOMTOM_API_KEY),
   weather: null,
   junctions: [],
@@ -410,10 +423,110 @@ const liveState = {
   predictions: []
 };
 
+const lastAttemptFailed = {
+  flow: false,
+  incidents: false,
+  weather: false
+};
+let hasAttemptedRefresh = false;
 let lastFlowFetchMs = 0;
 let lastIncidentsFetchMs = 0;
 let lastWeatherFetchMs = 0;
 let refreshInFlight = null;
+
+/**
+ * Validate integer slippy-map tile coordinates against zoom grid bounds [0, 2^z).
+ */
+function isValidTileCoord(z, x, y) {
+  return (
+    Number.isInteger(z) &&
+    Number.isInteger(x) &&
+    Number.isInteger(y) &&
+    z >= 0 &&
+    z <= 19 &&
+    x >= 0 &&
+    y >= 0 &&
+    x < Math.pow(2, z) &&
+    y < Math.pow(2, z)
+  );
+}
+
+/**
+ * Redact the configured TomTom API key from any diagnostic message.
+ */
+function redactKey(text) {
+  const raw = String(text || '');
+  return TOMTOM_API_KEY ? raw.replaceAll(TOMTOM_API_KEY, '[REDACTED]') : raw;
+}
+
+/**
+ * Derive overall updatedAt and per-source staleness strictly from successful fetches.
+ */
+function computeFreshness({
+  lastSuccessAt,
+  lastAttemptFailed: failedMap,
+  tomtomConfigured,
+  hasAttemptedRefresh: attempted,
+  nowMs = Date.now()
+}) {
+  const normalized = {
+    flow: lastSuccessAt?.flow || null,
+    incidents: lastSuccessAt?.incidents || null,
+    weather: lastSuccessAt?.weather || null
+  };
+
+  let updatedAt = null;
+  let maxMs = -1;
+  for (const ts of Object.values(normalized)) {
+    if (!ts) continue;
+    const parsed = Date.parse(ts);
+    if (Number.isFinite(parsed) && parsed > maxMs) {
+      maxMs = parsed;
+      updatedAt = ts;
+    }
+  }
+
+  const activeSources = tomtomConfigured ? ['flow', 'incidents', 'weather'] : ['weather'];
+  const thresholds = {
+    flow: FLOW_STALE_MS,
+    incidents: INCIDENTS_STALE_MS,
+    weather: WEATHER_STALE_MS
+  };
+  const staleSources = [];
+
+  for (const src of activeSources) {
+    const ts = normalized[src];
+    const failed = Boolean(failedMap?.[src]);
+    const expired = ts !== null && nowMs - Date.parse(ts) > thresholds[src];
+    const missingAfterAttempt = Boolean(attempted) && ts === null;
+    if (failed || expired || missingAfterAttempt) {
+      staleSources.push(src);
+    }
+  }
+
+  return {
+    updatedAt,
+    lastSuccessAt: normalized,
+    stale: staleSources.length > 0,
+    staleSources
+  };
+}
+
+function getLiveStateSnapshot(nowMs = Date.now()) {
+  const freshness = computeFreshness({
+    lastSuccessAt: liveState.lastSuccessAt,
+    lastAttemptFailed,
+    tomtomConfigured: Boolean(TOMTOM_API_KEY),
+    hasAttemptedRefresh,
+    nowMs
+  });
+  liveState.updatedAt = freshness.updatedAt;
+  liveState.lastSuccessAt = freshness.lastSuccessAt;
+  liveState.stale = freshness.stale;
+  liveState.staleSources = freshness.staleSources;
+  liveState.tomtomConfigured = Boolean(TOMTOM_API_KEY);
+  return liveState;
+}
 
 function recomputePredictions() {
   liveState.predictions = predictDeployments(
@@ -436,11 +549,15 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
       tasks.push(
         fetchWeather()
           .then((w) => {
+            const ts = Date.now();
             liveState.weather = w;
-            lastWeatherFetchMs = Date.now();
+            lastWeatherFetchMs = ts;
+            liveState.lastSuccessAt.weather = new Date(ts).toISOString();
+            lastAttemptFailed.weather = false;
           })
           .catch((err) => {
-            console.warn('Weather fetch failed:', err.message);
+            lastAttemptFailed.weather = true;
+            console.warn('Weather fetch failed:', redactKey(err.message));
           })
       );
     }
@@ -453,6 +570,7 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
         fetchAllJunctionFlows()
           .then((flows) => {
             if (flows.length > 0) {
+              const ts = Date.now();
               for (const flow of flows) {
                 const list = junctionHistory.get(flow.id) || [];
                 list.push(flow.congestionPct);
@@ -460,11 +578,17 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
                 junctionHistory.set(flow.id, list);
               }
               liveState.junctions = flows;
-              lastFlowFetchMs = Date.now();
+              lastFlowFetchMs = ts;
+              liveState.lastSuccessAt.flow = new Date(ts).toISOString();
+              lastAttemptFailed.flow = false;
+            } else {
+              lastAttemptFailed.flow = true;
+              console.warn('Flow fetch failed: 0 junctions succeeded');
             }
           })
           .catch((err) => {
-            console.warn('Flow fetch failed:', err.message);
+            lastAttemptFailed.flow = true;
+            console.warn('Flow fetch failed:', redactKey(err.message));
           })
       );
     }
@@ -476,22 +600,27 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
       tasks.push(
         fetchIncidents()
           .then((incs) => {
+            const ts = Date.now();
             liveState.incidents = incs;
-            lastIncidentsFetchMs = Date.now();
+            lastIncidentsFetchMs = ts;
+            liveState.lastSuccessAt.incidents = new Date(ts).toISOString();
+            lastAttemptFailed.incidents = false;
           })
           .catch((err) => {
-            console.warn('Incidents fetch failed:', err.message);
+            lastAttemptFailed.incidents = true;
+            console.warn('Incidents fetch failed:', redactKey(err.message));
           })
       );
     }
 
-    if (tasks.length === 0) return liveState;
+    if (tasks.length === 0) return getLiveStateSnapshot();
 
     await Promise.all(tasks);
-    liveState.updatedAt = new Date().toISOString();
+    hasAttemptedRefresh = true;
     recomputePredictions();
-    io.emit('traffic:state', liveState);
-    return liveState;
+    const snapshot = getLiveStateSnapshot();
+    io.emit('traffic:state', snapshot);
+    return snapshot;
   })().finally(() => {
     refreshInFlight = null;
   });
@@ -501,27 +630,97 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
 
 // ── Socket.IO Lifecycle ──
 io.on('connection', (socket) => {
-  socket.emit('traffic:state', liveState);
+  socket.emit('traffic:state', getLiveStateSnapshot());
 
-  const stale =
-    !liveState.updatedAt ||
-    Date.now() - new Date(liveState.updatedAt).getTime() > FLOW_POLL_INTERVAL_MS;
-  if (stale) {
-    refreshLiveState({ forceFlow: Boolean(TOMTOM_API_KEY), forceWeather: !liveState.weather });
+  const shouldRefreshFlow =
+    Boolean(TOMTOM_API_KEY) &&
+    (!liveState.lastSuccessAt.flow || Date.now() - lastFlowFetchMs > FLOW_POLL_INTERVAL_MS);
+  const shouldRefreshWeather =
+    !liveState.lastSuccessAt.weather || Date.now() - lastWeatherFetchMs > WEATHER_POLL_INTERVAL_MS;
+  const shouldRefreshIncidents =
+    Boolean(TOMTOM_API_KEY) &&
+    (!liveState.lastSuccessAt.incidents ||
+      Date.now() - lastIncidentsFetchMs > INCIDENTS_POLL_INTERVAL_MS);
+
+  if (shouldRefreshFlow || shouldRefreshWeather || shouldRefreshIncidents) {
+    refreshLiveState({
+      forceFlow: shouldRefreshFlow,
+      forceWeather: shouldRefreshWeather,
+      forceIncidents: shouldRefreshIncidents
+    });
   }
 });
 
 // ── Routes ──
 app.get('/api/health', (_req, res) => {
+  const snap = getLiveStateSnapshot();
   res.json({
     status: 'ok',
     tomtomConfigured: Boolean(TOMTOM_API_KEY),
-    updatedAt: liveState.updatedAt,
+    updatedAt: snap.updatedAt,
+    lastSuccessAt: snap.lastSuccessAt,
+    stale: snap.stale,
+    staleSources: snap.staleSources,
     activeClients: io.engine.clientsCount,
     monitoredJunctions: monitoredJunctions.length,
-    alertsCount: liveState.predictions.length,
-    weatherLoaded: Boolean(liveState.weather)
+    alertsCount: snap.predictions.length,
+    weatherLoaded: Boolean(snap.weather)
   });
+});
+
+app.get('/tiles/basemap/:z/:x/:y.png', async (req, res) => {
+  const z = Number(req.params.z);
+  const x = Number(req.params.x);
+  const y = Number(req.params.y);
+
+  if (!isValidTileCoord(z, x, y)) {
+    return res.status(400).json({ error: 'Invalid tile coordinates' });
+  }
+
+  if (!TOMTOM_API_KEY) {
+    return res.status(204).end();
+  }
+
+  const theme = req.query.theme === 'dark' ? 'dark' : 'light';
+  const style = theme === 'dark' ? 'night' : 'main';
+  const cacheKey = `${theme}/${z}/${x}/${y}`;
+  const cached = basemapTileCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=600');
+    return res.send(cached.buffer);
+  }
+
+  try {
+    const upstreamUrl =
+      `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
+      `?tileSize=512&view=IN&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
+    const upstream = await fetch(upstreamUrl, {
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
+    });
+
+    if (!upstream.ok) {
+      const errText = redactKey(await upstream.text().catch(() => ''));
+      console.warn('TomTom basemap tile error:', upstream.status, errText);
+      return res.status(upstream.status === 404 ? 204 : 502).end();
+    }
+
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    if (basemapTileCache.size >= BASEMAP_CACHE_MAX_ENTRIES) {
+      const oldestKey = basemapTileCache.keys().next().value;
+      if (oldestKey !== undefined) basemapTileCache.delete(oldestKey);
+    }
+    basemapTileCache.set(cacheKey, {
+      buffer,
+      expiresAt: Date.now() + BASEMAP_CACHE_TTL_MS
+    });
+
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=600');
+    return res.send(buffer);
+  } catch (_) {
+    return res.status(502).end();
+  }
 });
 
 app.get('/tiles/traffic/:z/:x/:y.png', async (req, res) => {
@@ -529,15 +728,7 @@ app.get('/tiles/traffic/:z/:x/:y.png', async (req, res) => {
   const x = Number(req.params.x);
   const y = Number(req.params.y);
 
-  if (
-    !Number.isInteger(z) ||
-    !Number.isInteger(x) ||
-    !Number.isInteger(y) ||
-    z < 0 ||
-    z > 22 ||
-    x < 0 ||
-    y < 0
-  ) {
+  if (!isValidTileCoord(z, x, y)) {
     return res.status(400).json({ error: 'Invalid tile coordinates' });
   }
 
@@ -558,12 +749,14 @@ app.get('/tiles/traffic/:z/:x/:y.png', async (req, res) => {
   try {
     const upstreamUrl =
       `https://api.tomtom.com/traffic/map/4/tile/flow/${style}/${z}/${x}/${y}.png` +
-      `?thickness=10&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
+      `?tileSize=512&key=${encodeURIComponent(TOMTOM_API_KEY)}`;
     const upstream = await fetch(upstreamUrl, {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
 
     if (!upstream.ok) {
+      const errText = redactKey(await upstream.text().catch(() => ''));
+      console.warn('TomTom tile error:', upstream.status, errText);
       return res.status(upstream.status === 404 ? 204 : 502).end();
     }
 
@@ -722,6 +915,8 @@ module.exports = {
   io,
   predictDeployments,
   computeTrend,
+  computeFreshness,
+  isValidTileCoord,
   haversineMeters,
   findNearestPoliceStation,
   describeWeatherCode,
