@@ -476,6 +476,7 @@ app.use(
         frameAncestors: ["'none'"]
       }
     },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     crossOriginEmbedderPolicy: false
   })
 );
@@ -873,7 +874,7 @@ io.on('connection', (socket) => {
 // ── Rate Limiters ──
 const healthLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: 'health' });
 const weatherLimiter = createRateLimiter({ windowMs: 60_000, max: 30, name: 'weather' });
-const tileLimiter = createRateLimiter({ windowMs: 60_000, max: 300, name: 'tiles' });
+const tileLimiter = createRateLimiter({ windowMs: 60_000, max: 500, name: 'tiles' });
 const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 40, name: 'search' });
 const routeLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'route' });
 
@@ -951,10 +952,13 @@ app.get('/tiles/basemap/:z/:x/:y.png', tileLimiter, async (req, res) => {
           `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
           `?tileSize=512&view=IN&key=${encodeURIComponent(key)}`;
         const upstream = await safeFetch(upstreamUrl, { timeoutMs: UPSTREAM_TIMEOUT_MS }, fetchImpl);
-        if (!upstream.ok) {
+        if (upstream.status !== 200) {
           const errText = redactKey(await upstream.text().catch(() => ''));
           console.warn('TomTom basemap tile error:', upstream.status, errText);
-          throw new HttpError(upstream.status === 404 ? 204 : 502, `Upstream HTTP ${upstream.status}`);
+          throw new HttpError(
+            upstream.status === 404 || upstream.status === 204 ? 204 : 502,
+            `Upstream HTTP ${upstream.status}`
+          );
         }
         return Buffer.from(await upstream.arrayBuffer());
       },
@@ -998,10 +1002,13 @@ app.get('/tiles/traffic/:z/:x/:y.png', tileLimiter, async (req, res) => {
           `https://api.tomtom.com/traffic/map/4/tile/flow/${style}/${z}/${x}/${y}.png` +
           `?tileSize=512&key=${encodeURIComponent(key)}`;
         const upstream = await safeFetch(upstreamUrl, { timeoutMs: UPSTREAM_TIMEOUT_MS }, fetchImpl);
-        if (!upstream.ok) {
+        if (upstream.status !== 200) {
           const errText = redactKey(await upstream.text().catch(() => ''));
           console.warn('TomTom tile error:', upstream.status, errText);
-          throw new HttpError(upstream.status === 404 ? 204 : 502, `Upstream HTTP ${upstream.status}`);
+          throw new HttpError(
+            upstream.status === 404 || upstream.status === 204 ? 204 : 502,
+            `Upstream HTTP ${upstream.status}`
+          );
         }
         return Buffer.from(await upstream.arrayBuffer());
       },
