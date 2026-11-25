@@ -44,3 +44,21 @@ OpenStreetMap node coordinates may still snap onto an unintended parallel lane, 
    npm test
    ```
 3. Only after live verification and review may `status` be raised from `"experimental"` to `"community"` (community-verified points) or `"verified"` (all junctions snapped & checked against live TomTom `flowSegmentData`, provenance & licence confirmed).
+
+---
+
+## Candidates Dropped
+
+The following starter candidates were omitted from `pune.json` and `bengaluru.json` because the OpenStreetMap intersection audit flagged `*_link` ramps, elevated flyover ways (`bridge=yes` / `layer > 0`), unnamed streets, or missing arterial intersections nearby. Re-test them once a live `TOMTOM_API_KEY` is available before adding them back:
+
+| City | Candidate | Reason Dropped (OSM Audit) | What to Re-Test with a Live TomTom Key |
+|---|---|---|---|
+| Bengaluru | Central Silk Board | Multi-level interchange with unnamed `trunk_link` ramps and under-construction flyover deck; nearest clean node (`164.0 m`) was a minor 4th Cross residential T-junction on Outer Ring Road. | Test an at-grade Outer Ring Road or Hosur Road approach ~150 m upstream of the flyover split and verify `flowSegmentData` snaps to the main carriageway rather than a ramp. |
+| Bengaluru | Dairy Circle | Every roundabout node carried `primary_link` approaches (3 unnamed), with 0 clean at-grade intersections inside the 280 m search box. | Test an at-grade Bannerghatta Road or Hosur Road coordinate 100–200 m outside the link ring and inspect the returned `flowSegmentData` polyline. |
+| Bengaluru | Mekhri Circle | Nominatim resolved to a bus stop; nearest node crossed an unnamed residential lane, with `294.6 m` to the nearest clean crossing. | Test an at-grade Bellary Road (NH44) or Jayamahal Road coordinate clear of the underpass and verify segment snapping. |
+| Bengaluru | Iblur Junction | Arterial node touched two unnamed tertiary ways (`181.5 m` to only a residential T-junction on Outer Ring Road). | Test an Outer Ring Road or Sarjapura Road carriageway coordinate away from slip lanes and confirm `flowSegmentData` matches the intended corridor. |
+| Bengaluru | Nayandahalli | Nominatim resolved to the railway station node with 0 arterial intersections within 330 m. | Locate the Mysore Road × Outer Ring Road at-grade crossing directly on imagery/OSM and verify `flowSegmentData` response and `freeFlowSpeed`. |
+| Pune | Bhumkar Chowk | Core node sits on the elevated Katraj–Dehu Road Bypass (`bridge=yes, layer=1`; `234.9 m` to next clean crossing). | Test separate at-grade Hinjawadi–Wakad Road vs NH48 bypass points and confirm each snaps to its intended road level. |
+| Pune | Dange Chowk | Roundabout nodes carried unnamed `primary_link` approaches (`256.7 m` to next clean node). | Test an approach coordinate on Ravet–Aundh BRTS Road or Hinjawadi–Chinchwad Road just outside the link ring. |
+| Pune | Nashik Phata | Multi-tier flyover ramp intersection (`primary_link`) with unnamed primary approaches (`356.8 m` to next clean node). | Test an at-grade Old Pune–Mumbai Highway or Pune–Nashik Highway coordinate clear of the flyover ramps. |
+| Pune | Yerwada (Nagar Road) | Nominatim resolved to a station node and the closest road crossing (`19.9 m`) met an unnamed residential street (`244.0 m` to `National Games Marg × Nagar Road`). | Test OSM `node/1416042243` (*Nagar Road × National Games Marg*) or Golf Course Chowk against `flowSegmentData` and inspect the snapped polyline. |

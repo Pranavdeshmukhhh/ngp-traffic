@@ -80,7 +80,7 @@
   "junctions": [
     {
       "id": "BLR001",
-      "name": "Hebbal (ORR / NH44)",
+      "name": "Outer Ring Rd / NH44 (Hebbal)",
       "lat": 13.042752,
       "lng": 77.590143,
       "roadType": "highway_entry",

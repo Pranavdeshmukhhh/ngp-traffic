@@ -98,7 +98,7 @@
     },
     {
       "id": "PNQ003",
-      "name": "Deccan Gymkhana (JM Rd / Gokhale Path)",
+      "name": "Jangli Maharaj Path / G.K. Gokhale Path (Deccan Gymkhana)",
       "lat": 18.515492,
       "lng": 73.842195,
       "roadType": "major_intersection",
@@ -134,7 +134,7 @@
     },
     {
       "id": "PNQ007",
-      "name": "Wakad Chowk (Wakad Rd / Datta Mandir Rd)",
+      "name": "Wakad Rd / Datta Mandir Rd (Wakad)",
       "lat": 18.592201,
       "lng": 73.762573,
       "roadType": "major_intersection",
@@ -143,7 +143,7 @@
     },
     {
       "id": "PNQ008",
-      "name": "Kharadi Bypass (Kharadi South Main Rd)",
+      "name": "Kharadi Bypass / Kharadi South Main Rd (Kharadi)",
       "lat": 18.550621,
       "lng": 73.937136,
       "roadType": "highway_entry",
