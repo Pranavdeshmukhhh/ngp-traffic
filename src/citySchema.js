@@ -4,6 +4,32 @@ const { z } = require('zod');
 
 const CITY_SCHEMA_VERSION = 1;
 const CITY_ID_REGEX = /^[a-z][a-z0-9-]{1,31}$/;
+const MAX_SOURCE_URL_LENGTH = 300;
+const ALLOWED_SOURCE_URL_HOSTS = Object.freeze(
+  new Set(['openstreetmap.org', 'www.openstreetmap.org', 'en.wikipedia.org'])
+);
+
+/**
+ * Validate optional provenance URL (HTTPS only, allow-listed public hosts, no credentials).
+ * @param {string} rawUrl
+ * @returns {boolean}
+ */
+function isAllowedSourceUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || rawUrl.length === 0 || rawUrl.length > MAX_SOURCE_URL_LENGTH) {
+    return false;
+  }
+  try {
+    const parsed = new URL(rawUrl);
+    return (
+      parsed.protocol === 'https:' &&
+      parsed.username === '' &&
+      parsed.password === '' &&
+      ALLOWED_SOURCE_URL_HOSTS.has(parsed.hostname)
+    );
+  } catch (_) {
+    return false;
+  }
+}
 
 const DEFAULT_THRESHOLDS = Object.freeze({
   incidentRadiusM: 150,
@@ -121,13 +147,22 @@ const bboxSchema = z
     }
   });
 
+const sourceUrlSchema = z
+  .string()
+  .max(MAX_SOURCE_URL_LENGTH)
+  .refine(
+    isAllowedSourceUrl,
+    'sourceUrl must be an HTTPS URL on openstreetmap.org or en.wikipedia.org'
+  );
+
 const landmarkSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/),
     label: z.string().trim().min(1).max(60),
     name: z.string().trim().min(1).max(100).optional(),
     lat: latSchema,
-    lng: lngSchema
+    lng: lngSchema,
+    sourceUrl: sourceUrlSchema.optional()
   })
   .strict();
 
@@ -147,7 +182,8 @@ const junctionSchema = z
         'landmark_junction'
       ])
       .optional(),
-    zone: z.string().trim().min(1).max(60).optional()
+    zone: z.string().trim().min(1).max(60).optional(),
+    sourceUrl: sourceUrlSchema.optional()
   })
   .strict();
 
@@ -438,7 +474,10 @@ function validateCityConfig(raw, { expectedId } = {}) {
 module.exports = {
   CITY_SCHEMA_VERSION,
   CITY_ID_REGEX,
+  MAX_SOURCE_URL_LENGTH,
+  ALLOWED_SOURCE_URL_HOSTS,
   DEFAULT_THRESHOLDS,
+  isAllowedSourceUrl,
   deriveTomTomView,
   isValidIanaTimezone,
   isValidIsoDate,

@@ -7,7 +7,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { DEFAULT_THRESHOLDS, validateCityConfig } = require('../src/citySchema');
+const {
+  DEFAULT_THRESHOLDS,
+  isAllowedSourceUrl,
+  isInsideBbox,
+  validateCityConfig
+} = require('../src/citySchema');
 const { DEFAULT_CITY_ID, getCity, hasCity, listCities, loadCityRegistry } = require('../src/cityRegistry');
 
 const rootDir = path.join(__dirname, '..');
@@ -255,6 +260,90 @@ test('cityRegistry freezes configs, blocks path traversal / prototype lookups, a
     assert.throws(() => loadCityRegistry({ citiesDir: tmpDir }), /invalid JSON/i);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('sourceUrl enforces HTTPS, host allow-list, length limit, and strict fields', () => {
+  const base = makeValidCityFixture();
+  assert.equal(isAllowedSourceUrl('https://www.openstreetmap.org/node/2262754119'), true);
+  assert.equal(isAllowedSourceUrl('https://openstreetmap.org/node/2262754119'), true);
+  assert.equal(isAllowedSourceUrl('https://en.wikipedia.org/wiki/Pune'), true);
+
+  assert.equal(isAllowedSourceUrl('http://www.openstreetmap.org/node/2262754119'), false);
+  assert.equal(isAllowedSourceUrl('https://evil.example.com/node/1'), false);
+  assert.equal(isAllowedSourceUrl('https://user:pass@en.wikipedia.org/wiki/Pune'), false);
+  assert.equal(isAllowedSourceUrl(`https://en.wikipedia.org/wiki/${'a'.repeat(300)}`), false);
+
+  const validWithUrls = validateCityConfig({
+    ...base,
+    landmarks: [
+      { ...base.landmarks[0], sourceUrl: 'https://en.wikipedia.org/wiki/Pune' }
+    ],
+    junctions: [
+      { ...base.junctions[0], sourceUrl: 'https://www.openstreetmap.org/node/2262754119' }
+    ]
+  });
+  assert.equal(validWithUrls.ok, true);
+
+  const badJunctionUrl = validateCityConfig({
+    ...base,
+    junctions: [
+      { ...base.junctions[0], sourceUrl: 'https://evil.example.com/node/1' }
+    ]
+  });
+  assert.equal(badJunctionUrl.ok, false);
+
+  const badLandmarkUrl = validateCityConfig({
+    ...base,
+    landmarks: [
+      { ...base.landmarks[0], sourceUrl: 'http://en.wikipedia.org/wiki/Pune' }
+    ]
+  });
+  assert.equal(badLandmarkUrl.ok, false);
+});
+
+test('all shipped cities load with unique IDs, points inside bbox, allowed sourceUrls, and CITY env smoke loads', () => {
+  const cities = listCities();
+  const cityIds = cities.map((c) => c.id);
+  assert.equal(cityIds.includes('nagpur'), true);
+  assert.equal(cityIds.includes('pune'), true);
+  assert.equal(cityIds.includes('bengaluru'), true);
+
+  for (const city of cities) {
+    assert.equal(getCity(city.id)?.id, city.id);
+
+    const lmIds = new Set(city.landmarks.map((l) => l.id));
+    const jIds = new Set(city.junctions.map((j) => j.id));
+    const psIds = new Set(city.policeStations.map((s) => s.id));
+    assert.equal(lmIds.size, city.landmarks.length);
+    assert.equal(jIds.size, city.junctions.length);
+    assert.equal(psIds.size, city.policeStations.length);
+
+    for (const lm of city.landmarks) {
+      assert.equal(isInsideBbox(lm.lat, lm.lng, city.map.bbox), true);
+      if (city.id !== DEFAULT_CITY_ID) {
+        assert.equal(isAllowedSourceUrl(lm.sourceUrl), true);
+      }
+    }
+    for (const j of city.junctions) {
+      assert.equal(isInsideBbox(j.lat, j.lng, city.map.bbox), true);
+      if (city.id !== DEFAULT_CITY_ID) {
+        assert.equal(isAllowedSourceUrl(j.sourceUrl), true);
+      }
+    }
+    for (const ps of city.policeStations) {
+      assert.equal(isInsideBbox(ps.lat, ps.lng, city.map.bbox), true);
+    }
+  }
+
+  for (const starterId of ['pune', 'bengaluru']) {
+    const reg = loadCityRegistry({ envCity: starterId });
+    assert.equal(reg.getDefaultCityId(), starterId);
+    const active = reg.getCity(reg.getDefaultCityId());
+    assert.equal(active.status, 'experimental');
+    assert.equal(active.junctions.length >= 8 && active.junctions.length <= 12, true);
+    assert.equal(active.policeStations.length, 0);
+    assert.equal(active.tomtomView, 'IN');
   }
 });
 

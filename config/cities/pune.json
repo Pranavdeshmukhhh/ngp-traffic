@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "id": "pune",
+  "name": "Pune",
+  "country": "IN",
+  "timezone": "Asia/Kolkata",
+  "locale": "en-IN",
+  "status": "experimental",
+  "tomtomView": "IN",
+  "map": {
+    "center": {
+      "lat": 18.521111,
+      "lng": 73.855278
+    },
+    "zoom": 12,
+    "minZoom": 10,
+    "maxZoom": 19,
+    "bbox": {
+      "south": 18.43,
+      "west": 73.7,
+      "north": 18.64,
+      "east": 73.98
+    }
+  },
+  "routeBbox": {
+    "south": 18.35,
+    "west": 73.6,
+    "north": 18.72,
+    "east": 74.08
+  },
+  "search": {
+    "biasRadiusM": 30000,
+    "countrySet": "IN"
+  },
+  "incidents": {
+    "language": "en-GB"
+  },
+  "landmarks": [
+    {
+      "id": "shaniwar-wada",
+      "label": "Shaniwar Wada",
+      "name": "Shaniwar Wada",
+      "lat": 18.519075,
+      "lng": 73.85545,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Shaniwar_Wada"
+    },
+    {
+      "id": "pune-junction",
+      "label": "Pune Junction",
+      "name": "Pune Junction railway station",
+      "lat": 18.5289,
+      "lng": 73.8743,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Pune_Junction_railway_station"
+    },
+    {
+      "id": "pune-airport",
+      "label": "Airport",
+      "name": "Pune Airport",
+      "lat": 18.582222,
+      "lng": 73.919722,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Pune_Airport"
+    },
+    {
+      "id": "hinjawadi",
+      "label": "Hinjawadi",
+      "name": "Hinjawadi",
+      "lat": 18.594596,
+      "lng": 73.718519,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Hinjawadi"
+    },
+    {
+      "id": "hadapsar",
+      "label": "Hadapsar",
+      "name": "Hadapsar",
+      "lat": 18.496667,
+      "lng": 73.941667,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Hadapsar"
+    }
+  ],
+  "junctions": [
+    {
+      "id": "PNQ001",
+      "name": "Swargate (Satara Rd / J.S. Marg)",
+      "lat": 18.500455,
+      "lng": 73.858549,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/2262754119"
+    },
+    {
+      "id": "PNQ002",
+      "name": "Nal Stop (Karve Rd / Chiplunkar Path)",
+      "lat": 18.508488,
+      "lng": 73.830801,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/2085669823"
+    },
+    {
+      "id": "PNQ003",
+      "name": "Deccan Gymkhana (JM Rd / Gokhale Path)",
+      "lat": 18.515492,
+      "lng": 73.842195,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/1838679858"
+    },
+    {
+      "id": "PNQ004",
+      "name": "Pune University Chowk (Ganeshkhind Rd / Baner Rd)",
+      "lat": 18.542076,
+      "lng": 73.828706,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/7812435226"
+    },
+    {
+      "id": "PNQ005",
+      "name": "Bremen Chowk",
+      "lat": 18.560402,
+      "lng": 73.814933,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/2243931599"
+    },
+    {
+      "id": "PNQ006",
+      "name": "Parihar Chowk",
+      "lat": 18.560551,
+      "lng": 73.809246,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/2668919424"
+    },
+    {
+      "id": "PNQ007",
+      "name": "Wakad Chowk (Wakad Rd / Datta Mandir Rd)",
+      "lat": 18.592201,
+      "lng": 73.762573,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/2598224275"
+    },
+    {
+      "id": "PNQ008",
+      "name": "Kharadi Bypass (Kharadi South Main Rd)",
+      "lat": 18.550621,
+      "lng": 73.937136,
+      "roadType": "highway_entry",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/1315296276"
+    },
+    {
+      "id": "PNQ009",
+      "name": "Shaniwar Wada (Shivaji Rd / Ganesh Path)",
+      "lat": 18.518542,
+      "lng": 73.856214,
+      "roadType": "landmark_junction",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/245646965"
+    },
+    {
+      "id": "PNQ010",
+      "name": "Pune Station (Raja Bahadur Mill Marg / Ambedkar Path)",
+      "lat": 18.53007,
+      "lng": 73.874754,
+      "roadType": "landmark_junction",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/2171089240"
+    }
+  ],
+  "policeStations": [],
+  "sources": {
+    "junctions": "OpenStreetMap at-grade intersection nodes via api.openstreetmap.org/0.6 (see per-junction sourceUrl)",
+    "policeStations": "None — omitted until a verifiable open municipal dataset is available",
+    "retrievedOn": "2026-11-25",
+    "licence": "Junctions: OpenStreetMap contributors (ODbL 1.0); Center & Landmarks: Wikipedia contributors (CC BY-SA 4.0)",
+    "notes": "Experimental starter config. policeStations is intentionally empty because no verifiable open police-station dataset was available, so HIGH advisories run without nearest-station info. All 10 junctions are named at-grade OSM intersection nodes but remain UNVERIFIED against TomTom flowSegmentData."
+  }
+}

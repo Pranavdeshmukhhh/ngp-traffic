@@ -72,4 +72,10 @@ Open `http://localhost:3000`.
 
 ```bash
 npm test
+npm run validate:cities
 ```
+
+## Licensing & City Data
+
+- **Code:** Software source code is licensed under the **MIT License** ([`LICENSE`](LICENSE)).
+- **City Data (`config/cities/`):** City JSON datasets keep their upstream source licences and are **not** covered by the MIT License — OpenStreetMap data is © OpenStreetMap contributors under **ODbL 1.0** (attribution required) and Wikipedia coordinates are under **CC BY-SA 4.0**. Share-alike obligations on mixed/derived datasets are **UNVERIFIED** and require legal review. See [`config/cities/DATA_LICENSE.md`](config/cities/DATA_LICENSE.md).
