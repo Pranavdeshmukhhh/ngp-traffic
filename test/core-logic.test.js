@@ -4,7 +4,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { LruCache } = require('../src/lru');
-const { loadConfig, redactSecrets, safeFetch } = require('../src/security');
+const {
+  loadConfig,
+  redactSecrets,
+  safeFetch,
+  normalizeIp,
+  resolveClientIp,
+  createSocketIpLimiter
+} = require('../src/security');
 const { getCity, DEFAULT_CITY_ID } = require('../src/cityRegistry');
 const {
   createTileErrorTracker,
@@ -268,4 +275,106 @@ test('createTileErrorTracker expires old errors outside sliding window and valid
   assert.throws(() => createTileErrorTracker({ threshold: 1.5 }), RangeError);
   assert.throws(() => createTileErrorTracker({ windowMs: 0 }), RangeError);
   assert.throws(() => createTileErrorTracker({ windowMs: Infinity }), RangeError);
+});
+
+test('loadConfig validates TRUST_PROXY as integer hops 0-5 and rejects booleans/invalid values', () => {
+  assert.equal(loadConfig({}).trustProxy, 0);
+  assert.equal(loadConfig({ TRUST_PROXY: '' }).trustProxy, 0);
+  assert.equal(loadConfig({ TRUST_PROXY: '1' }).trustProxy, 1);
+  assert.equal(loadConfig({ TRUST_PROXY: '5' }).trustProxy, 5);
+
+  for (const bad of ['true', 'false', '-1', '1.5', '6', 'loopback']) {
+    assert.throws(() => loadConfig({ TRUST_PROXY: bad }), /TRUST_PROXY/);
+  }
+});
+
+test('normalizeIp and resolveClientIp ignore spoofed headers and fail closed on oversized XFF', () => {
+  assert.equal(normalizeIp('::ffff:203.0.113.10'), '203.0.113.10');
+  assert.equal(normalizeIp('2001:DB8::1'), '2001:db8::1');
+  assert.equal(normalizeIp('not-an-ip'), '');
+
+  // trustProxyHops=0 ignores X-Forwarded-For completely
+  assert.equal(
+    resolveClientIp({
+      remoteAddress: '::ffff:127.0.0.1',
+      xForwardedFor: '1.2.3.4',
+      trustProxyHops: 0
+    }),
+    '127.0.0.1'
+  );
+
+  // trustProxyHops=1 picks rightmost proxy-appended IP, ignoring spoofed leftmost header
+  assert.equal(
+    resolveClientIp({
+      remoteAddress: '10.0.0.1',
+      xForwardedFor: '1.1.1.1, 198.51.100.7',
+      trustProxyHops: 1
+    }),
+    '198.51.100.7'
+  );
+
+  // trustProxyHops=2 walks 2 hops back from peer
+  assert.equal(
+    resolveClientIp({
+      remoteAddress: '10.0.0.5',
+      xForwardedFor: '9.9.9.9, 198.51.100.7, 172.68.0.1',
+      trustProxyHops: 2
+    }),
+    '198.51.100.7'
+  );
+
+  // Malformed header fails closed to peer IP
+  assert.equal(
+    resolveClientIp({
+      remoteAddress: '10.0.0.1',
+      xForwardedFor: '<script>alert(1)</script>',
+      trustProxyHops: 1
+    }),
+    '10.0.0.1'
+  );
+
+  // Oversized X-Forwarded-For (> 2048 chars, e.g. >4 KB spoofed prefix) fails closed to peer IP
+  const hugeSpoofedPrefix = '203.0.113.9, '.repeat(350);
+  const hugeXff = `${hugeSpoofedPrefix}198.51.100.77`;
+  assert.ok(hugeXff.length > 4096);
+  assert.equal(
+    resolveClientIp({
+      remoteAddress: '10.0.0.1',
+      xForwardedFor: hugeXff,
+      trustProxyHops: 1
+    }),
+    '10.0.0.1'
+  );
+});
+
+test('createSocketIpLimiter isolates clients behind proxy and blocks spoofed bypass', () => {
+  const limiter = createSocketIpLimiter({ maxPerIp: 2, getTrustProxy: () => 1 });
+  const disconnectHandlers = [];
+
+  /** @param {string} xff */
+  const makeSocket = (xff) =>
+    /** @type {any} */ ({
+      handshake: { address: '10.0.0.1', headers: { 'x-forwarded-for': xff } },
+      once(evt, fn) {
+        if (evt === 'disconnect') disconnectHandlers.push(fn);
+      }
+    });
+
+  const results = [];
+  limiter(makeSocket('1.1.1.1, 203.0.113.10'), (err) => results.push(err || null));
+  limiter(makeSocket('2.2.2.2, 203.0.113.10'), (err) => results.push(err || null));
+  // 3rd attempt from same resolved client with different spoofed leftmost IP is rejected
+  limiter(makeSocket('3.3.3.3, 203.0.113.10'), (err) => results.push(err || null));
+  // Different real client behind same proxy succeeds
+  limiter(makeSocket('203.0.113.11'), (err) => results.push(err || null));
+
+  assert.equal(results[0], null);
+  assert.equal(results[1], null);
+  assert.match(String(results[2]), /Too many concurrent connections/);
+  assert.equal(results[3], null);
+  assert.equal(limiter.getCount('203.0.113.10'), 2);
+
+  // Disconnecting frees slot
+  disconnectHandlers[0]();
+  assert.equal(limiter.getCount('203.0.113.10'), 1);
 });
