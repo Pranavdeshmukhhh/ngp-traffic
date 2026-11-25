@@ -7,6 +7,12 @@ const {
   io,
   setTestOverrides,
   resetStateForTests,
+  routeSchemasByCity,
+  refreshCityState,
+  startPollingLoops,
+  stopPollingLoops,
+  getActiveTimerCount,
+  basemapTileCache,
   upstreamBudget
 } = require('../server');
 
@@ -389,5 +395,187 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     } finally {
       io.disconnectSockets(true);
     }
+  });
+
+  await t.test('Multi-city metadata, state, and ?city= scoping with zero raw echo and zero wasted quota', async () => {
+    resetStateForTests();
+
+    // GET /api/cities returns catalog summary
+    const citiesRes = await fetch(`${baseUrl}/api/cities`);
+    assert.equal(citiesRes.status, 200);
+    const citiesBody = await citiesRes.json();
+    assert.equal(citiesBody.defaultCityId, 'nagpur');
+    assert.equal(citiesBody.maxActiveCities, 1);
+    assert.equal(citiesBody.cities.length, 3);
+    const puneSummary = citiesBody.cities.find((c) => c.id === 'pune');
+    assert.ok(puneSummary);
+    assert.equal(puneSummary.monitoredJunctionCount, 10);
+
+    // GET /api/cities/:id returns full config for valid city, 404 with no raw echo otherwise
+    const puneRes = await fetch(`${baseUrl}/api/cities/pune`);
+    assert.equal(puneRes.status, 200);
+    const puneDetail = await puneRes.json();
+    assert.equal(puneDetail.id, 'pune');
+    assert.equal(puneDetail.junctions.length, 10);
+
+    const badCityRes = await fetch(`${baseUrl}/api/cities/atlantis`);
+    assert.equal(badCityRes.status, 404);
+    assert.equal((await badCityRes.text()).includes('atlantis'), false);
+
+    const traversalCityRes = await fetch(`${baseUrl}/api/cities/..%2F..%2Fetc%2Fpasswd`);
+    assert.equal(traversalCityRes.status, 404);
+    assert.equal((await traversalCityRes.text()).includes('passwd'), false);
+
+    // GET /api/state returns per-city state and rejects unknown/invalid city without echo
+    const defaultStateRes = await fetch(`${baseUrl}/api/state`);
+    assert.equal(defaultStateRes.status, 200);
+    assert.equal((await defaultStateRes.json()).cityId, 'nagpur');
+
+    const puneStateRes = await fetch(`${baseUrl}/api/state?city=pune`);
+    assert.equal(puneStateRes.status, 200);
+    assert.equal((await puneStateRes.json()).cityId, 'pune');
+
+    const unknownStateRes = await fetch(`${baseUrl}/api/state?city=unknown_xyz`);
+    assert.equal(unknownStateRes.status, 400);
+    assert.equal((await unknownStateRes.text()).includes('unknown_xyz'), false);
+
+    const traversalStateRes = await fetch(`${baseUrl}/api/state?city=../../etc/passwd`);
+    assert.equal(traversalStateRes.status, 400);
+    assert.equal((await traversalStateRes.text()).includes('passwd'), false);
+
+    // Unknown ?city= consumes 0 upstream quota across /api/search, /api/route, /api/health, /tiles/basemap
+    let fetchedUrls = [];
+    setTestOverrides({
+      config: { tomtomApiKey: TEST_TOMTOM_KEY },
+      fetch: async (url) => {
+        fetchedUrls.push(String(url));
+        if (String(url).includes('/map/1/tile/')) {
+          return makePngResponse('tile-ok');
+        }
+        if (String(url).includes('/search/2/search/')) {
+          return makeJsonResponse({
+            results: [
+              {
+                poi: { name: 'Shaniwar Wada' },
+                address: { freeformAddress: 'Pune, Maharashtra' },
+                position: { lat: 18.5191, lon: 73.8555 }
+              }
+            ]
+          });
+        }
+        return makeJsonResponse({
+          routes: [
+            {
+              summary: { lengthInMeters: 5200, travelTimeInSeconds: 780, trafficDelayInSeconds: 120 },
+              legs: []
+            }
+          ]
+        });
+      }
+    });
+
+    const beforeBudget = upstreamBudget.snapshot().tomtomNonTile;
+    for (const badPath of [
+      '/api/search?q=Shaniwar&city=unknown_xyz',
+      '/api/route?city=unknown_xyz&fromLat=18.52&fromLng=73.85&toLat=18.53&toLng=73.86',
+      '/api/health?city=unknown_xyz',
+      '/tiles/basemap/13/5897/3585.png?city=unknown_xyz'
+    ]) {
+      const r = await fetch(`${baseUrl}${badPath}`);
+      assert.equal(r.status, 400, `Expected 400 for ${badPath}`);
+      assert.equal((await r.text()).includes('unknown_xyz'), false);
+    }
+    assert.equal(upstreamBudget.snapshot().tomtomNonTile, beforeBudget);
+    assert.equal(fetchedUrls.length, 0);
+
+    // ?city=pune search bias & pre-built routeSchemasByCity
+    assert.equal(routeSchemasByCity.has('nagpur'), true);
+    assert.equal(routeSchemasByCity.has('pune'), true);
+    assert.equal(routeSchemasByCity.has('bengaluru'), true);
+
+    const searchPuneRes = await fetch(`${baseUrl}/api/search?q=Shaniwar&city=pune`);
+    assert.equal(searchPuneRes.status, 200);
+    const searchUrl = fetchedUrls.find((u) => u.includes('/search/2/search/'));
+    assert.ok(searchUrl);
+    assert.equal(searchUrl.includes('lat=18.521111'), true);
+    assert.equal(searchUrl.includes('lon=73.855278'), true);
+    assert.equal(searchUrl.includes('radius=30000'), true);
+
+    // Pune coordinates allowed on ?city=pune, rejected on default Nagpur
+    const puneRouteOk = await fetch(
+      `${baseUrl}/api/route?city=pune&fromLat=18.52&fromLng=73.85&toLat=18.59&toLng=73.74`
+    );
+    assert.equal(puneRouteOk.status, 200);
+    const puneRouteOnNagpur = await fetch(
+      `${baseUrl}/api/route?fromLat=18.52&fromLng=73.85&toLat=18.59&toLng=73.74`
+    );
+    assert.equal(puneRouteOnNagpur.status, 400);
+
+    // Basemap tile cache key includes viewTag (e.g. IN/light/z/x/y)
+    const tileRes = await fetch(`${baseUrl}/tiles/basemap/13/5897/3585.png?theme=light&city=pune`);
+    assert.equal(tileRes.status, 200);
+    assert.ok(basemapTileCache.get('IN/light/13/5897/3585'));
+
+    // Health ?city=pune reflects Pune junction count
+    const puneHealth = await (await fetch(`${baseUrl}/api/health?city=pune`)).json();
+    assert.equal(puneHealth.city, 'pune');
+    assert.equal(puneHealth.monitoredJunctions, 10);
+  });
+
+  await t.test('Per-city freshness isolation and polling timer cleanup', async () => {
+    resetStateForTests();
+    setTestOverrides({
+      config: { tomtomApiKey: TEST_TOMTOM_KEY },
+      fetch: async (url) => {
+        const u = String(url);
+        if (u.includes('api.open-meteo.com')) {
+          return makeJsonResponse({
+            current: { temperature_2m: 31, precipitation: 0, weather_code: 0 }
+          });
+        }
+        if (u.includes('flowSegmentData')) {
+          // Pune points start around lat 18.x; Nagpur around 21.x
+          if (u.includes('point=18.')) {
+            return new Response('pune flow down', { status: 500 });
+          }
+          return makeJsonResponse({
+            flowSegmentData: {
+              currentSpeed: 28,
+              freeFlowSpeed: 50,
+              currentTravelTime: 180,
+              freeFlowTravelTime: 100,
+              confidence: 0.9,
+              roadClosure: false
+            }
+          });
+        }
+        if (u.includes('incidentDetails')) {
+          return makeJsonResponse({ incidents: [] });
+        }
+        return makeJsonResponse({});
+      }
+    });
+
+    await refreshCityState('nagpur', { forceFlow: true, forceIncidents: true, forceWeather: true });
+    await refreshCityState('pune', { forceFlow: true, forceIncidents: true, forceWeather: true });
+
+    const nagpurState = await (await fetch(`${baseUrl}/api/state?city=nagpur`)).json();
+    const puneState = await (await fetch(`${baseUrl}/api/state?city=pune`)).json();
+
+    assert.equal(nagpurState.cityId, 'nagpur');
+    assert.equal(nagpurState.stale, false);
+    assert.equal(nagpurState.junctions.length, 16);
+
+    assert.equal(puneState.cityId, 'pune');
+    assert.equal(puneState.stale, true);
+    assert.equal(puneState.staleSources.includes('flow'), true);
+    assert.equal(puneState.junctions.length, 0);
+
+    // Calling startPollingLoops twice does not leak duplicate timers; stopPollingLoops clears all
+    startPollingLoops();
+    startPollingLoops();
+    assert.equal(getActiveTimerCount(), 3);
+    stopPollingLoops();
+    assert.equal(getActiveTimerCount(), 0);
   });
 });

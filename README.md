@@ -60,14 +60,19 @@ Open `http://localhost:3000`.
 | `PORT` | No | `3000` | HTTP server port |
 | `TRUST_PROXY` | No | `0` | Trusted reverse-proxy hop count (`0–5`; set `1` behind Render/Nginx — verify hop count for your host) |
 | `ALLOWED_ORIGIN` | No | `*` | Allowed CORS origin(s), comma-separated |
+| `CITY` | No | `nagpur` | Default city ID loaded from `config/cities/<id>.json` |
+| `MAX_ACTIVE_CITIES` | No | `1` | Maximum concurrent active cities for background polling (`1–10`) |
 
 ## API Endpoints
 
-- `GET /api/health` — Server status, `tomtomConfigured`, `updatedAt`, per-source `lastSuccessAt`, `stale`, `staleSources`, active Socket.IO clients, alert count
-- `GET /tiles/basemap/:z/:x/:y.png` — Cached TomTom light/dark basemap tile proxy (`?theme=light|dark`)
-- `GET /tiles/traffic/:z/:x/:y.png` — Cached TomTom live traffic flow tile proxy (`?theme=light|dark`)
-- `GET /api/search?q=...` — Nagpur-biased place autocomplete
-- `GET /api/route?fromLat=&fromLng=&toLat=&toLng=` — Parallel fastest & shortest live routes
+- `GET /api/cities` — Summary catalog of registered cities, `defaultCityId`, and `maxActiveCities`
+- `GET /api/cities/:id` — Full public metadata, landmarks, junctions, and thresholds for a registered city
+- `GET /api/state?city=<id>` — Live traffic, incidents, weather, and advisory snapshot for a city (defaults to `CITY`)
+- `GET /api/health?city=<id>` — Server and per-city status, `tomtomConfigured`, `updatedAt`, per-source `lastSuccessAt`, `stale`, `staleSources`, active Socket.IO clients, alert count, and budget-aware `pollSchedule`
+- `GET /tiles/basemap/:z/:x/:y.png?theme=light|dark&city=<id>` — Cached TomTom light/dark basemap tile proxy (view-isolated per city)
+- `GET /tiles/traffic/:z/:x/:y.png?theme=light|dark&city=<id>` — Cached TomTom live traffic flow tile proxy
+- `GET /api/search?q=...&city=<id>` — City-biased place autocomplete (defaults to `CITY`)
+- `GET /api/route?fromLat=&fromLng=&toLat=&toLng=&city=<id>` — Parallel fastest & shortest live routes validated against the city's `routeBbox`
 
 ## Testing
 

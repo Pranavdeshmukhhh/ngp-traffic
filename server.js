@@ -15,9 +15,12 @@ const cors = require('cors');
 const helmet = require('helmet');
 const { Server } = require('socket.io');
 const { LruCache } = require('./src/lru');
-const { getCity, getDefaultCityId } = require('./src/cityRegistry');
+const { getCity, hasCity, listCities, getDefaultCityId } = require('./src/cityRegistry');
+const { computeBudgetAwarePollIntervals } = require('./src/pollBudget');
 const {
   loadConfig,
+  cityIdParamSchema,
+  stateQuerySchema,
   tileParamsSchema,
   tileQuerySchema,
   searchQuerySchema,
@@ -34,12 +37,13 @@ let activeConfig = loadConfig();
 let fetchImpl = globalThis.fetch;
 
 const PORT = activeConfig.port;
-const activeCity = getCity(getDefaultCityId());
-const cityCenter = activeCity.map.center;
-const cityBboxStr =
-  `${activeCity.map.bbox.west},${activeCity.map.bbox.south},` +
-  `${activeCity.map.bbox.east},${activeCity.map.bbox.north}`;
-const routeQuerySchema = createRouteQuerySchema(activeCity.routeBbox);
+const defaultCityId = getDefaultCityId();
+const defaultCity = /** @type {NonNullable<ReturnType<typeof getCity>>} */ (getCity(defaultCityId));
+/** @type {Map<string, ReturnType<typeof createRouteQuerySchema>>} */
+const routeSchemasByCity = new Map();
+for (const city of listCities()) {
+  routeSchemasByCity.set(city.id, createRouteQuerySchema(city.routeBbox));
+}
 
 const TILE_CACHE_TTL_MS = 120 * 1000;
 const TILE_CACHE_MAX_ENTRIES = 500;
@@ -60,14 +64,7 @@ function getTomTomKey() {
 
 const ROADWORKS_OR_CLOSURE_CODES = new Set([7, 8, 9]);
 const ACCIDENT_OR_BREAKDOWN_CODES = new Set([1, 14]);
-const cityThresholds = activeCity.thresholds;
-const HISTORY_LIMIT = cityThresholds.historyLimit;
-
-const junctionHistory = new Map();
-
-const junctions = activeCity.junctions;
-const stations = activeCity.policeStations;
-const monitoredJunctions = junctions.filter((j) => j.key === true);
+const cityThresholds = defaultCity.thresholds;
 
 /**
  * Compute great-circle distance in meters between two WGS84 coordinates.
@@ -168,7 +165,7 @@ function predictDeployments(
   incidents,
   weather,
   stationList,
-  historyMap = junctionHistory,
+  historyMap,
   thresholds = cityThresholds
 ) {
   if (!Array.isArray(junctionFlows) || junctionFlows.length === 0) return [];
@@ -328,11 +325,19 @@ async function fetchJson(url) {
   return res.json();
 }
 
-async function fetchWeather() {
+/**
+ * Format a bounding box object into TomTom's `west,south,east,north` string.
+ * @param {{ west: number, south: number, east: number, north: number }} bbox
+ */
+function formatBboxStr(bbox) {
+  return `${bbox.west},${bbox.south},${bbox.east},${bbox.north}`;
+}
+
+async function fetchWeather(city = defaultCity) {
   upstreamBudget.tryConsume('openMeteo', 1);
   const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${cityCenter.lat}` +
-    `&longitude=${cityCenter.lng}&current=temperature_2m,precipitation,weather_code`;
+    `https://api.open-meteo.com/v1/forecast?latitude=${city.map.center.lat}` +
+    `&longitude=${city.map.center.lng}&current=temperature_2m,precipitation,weather_code`;
   const data = await fetchJson(url);
   const current = data?.current || {};
   return {
@@ -376,17 +381,18 @@ async function fetchJunctionFlow(junction) {
   };
 }
 
-async function fetchAllJunctionFlows() {
+async function fetchAllJunctionFlows(monitoredList) {
   if (!getTomTomKey()) return [];
-  if (!upstreamBudget.tryConsume('tomtomNonTile', monitoredJunctions.length)) {
+  if (!Array.isArray(monitoredList) || monitoredList.length === 0) return [];
+  if (!upstreamBudget.tryConsume('tomtomNonTile', monitoredList.length)) {
     console.warn('Daily TomTom non-tile quota guard paused flow poll');
     return [];
   }
   const results = [];
   const batchSize = 4;
 
-  for (let i = 0; i < monitoredJunctions.length; i += batchSize) {
-    const batch = monitoredJunctions.slice(i, i + batchSize);
+  for (let i = 0; i < monitoredList.length; i += batchSize) {
+    const batch = monitoredList.slice(i, i + batchSize);
     const settled = await Promise.allSettled(batch.map((j) => fetchJunctionFlow(j)));
     for (const item of settled) {
       if (item.status === 'fulfilled' && item.value) {
@@ -397,7 +403,7 @@ async function fetchAllJunctionFlows() {
   return results;
 }
 
-async function fetchIncidents() {
+async function fetchIncidents(city = defaultCity) {
   const key = getTomTomKey();
   if (!key) return [];
   if (!upstreamBudget.tryConsume('tomtomNonTile', 1)) {
@@ -410,7 +416,7 @@ async function fetchIncidents() {
   const url =
     `https://api.tomtom.com/traffic/services/5/incidentDetails` +
     `?key=${encodeURIComponent(key)}` +
-    `&bbox=${cityBboxStr}&fields=${fields}&language=${encodeURIComponent(activeCity.incidents.language)}&timeValidityFilter=present`;
+    `&bbox=${formatBboxStr(city.map.bbox)}&fields=${fields}&language=${encodeURIComponent(city.incidents.language)}&timeValidityFilter=present`;
 
   const data = await fetchJson(url);
   const list = Array.isArray(data?.incidents) ? data.incidents : [];
@@ -518,32 +524,71 @@ const basemapTileCache = new LruCache({
   defaultTtlMs: BASEMAP_CACHE_TTL_MS
 });
 
-const liveState = {
-  updatedAt: null,
-  lastSuccessAt: {
-    flow: null,
-    incidents: null,
-    weather: null
-  },
-  stale: false,
-  staleSources: [],
-  tomtomConfigured: Boolean(getTomTomKey()),
-  weather: null,
-  junctions: [],
-  incidents: [],
-  predictions: []
-};
+/**
+ * Build isolated mutable live state for one registered city.
+ * @param {NonNullable<ReturnType<typeof getCity>>} city
+ */
+function createCityState(city) {
+  return {
+    city,
+    monitoredJunctions: city.junctions.filter((j) => j.key === true),
+    junctionHistory: new Map(),
+    liveState: {
+      cityId: city.id,
+      updatedAt: null,
+      lastSuccessAt: {
+        flow: null,
+        incidents: null,
+        weather: null
+      },
+      stale: false,
+      staleSources: /** @type {string[]} */ ([]),
+      tomtomConfigured: Boolean(getTomTomKey()),
+      weather: /** @type {any} */ (null),
+      junctions: /** @type {any[]} */ ([]),
+      incidents: /** @type {any[]} */ ([]),
+      predictions: /** @type {any[]} */ ([])
+    },
+    lastAttemptFailed: {
+      flow: false,
+      incidents: false,
+      weather: false
+    },
+    hasAttemptedRefresh: false,
+    lastFlowFetchMs: 0,
+    lastIncidentsFetchMs: 0,
+    lastWeatherFetchMs: 0,
+    refreshInFlight: /** @type {Promise<any> | null} */ (null)
+  };
+}
 
-const lastAttemptFailed = {
-  flow: false,
-  incidents: false,
-  weather: false
-};
-let hasAttemptedRefresh = false;
-let lastFlowFetchMs = 0;
-let lastIncidentsFetchMs = 0;
-let lastWeatherFetchMs = 0;
-let refreshInFlight = null;
+/** @type {Map<string, ReturnType<typeof createCityState>>} */
+const cityStates = new Map();
+for (const city of listCities()) {
+  cityStates.set(city.id, createCityState(city));
+}
+
+/**
+ * @param {string} [cityId]
+ */
+function getCityState(cityId = defaultCityId) {
+  return cityStates.get(cityId);
+}
+
+/**
+ * Compute budget-aware polling intervals based on configured daily budget and active city cap.
+ * @param {number} [occupiedCities]
+ */
+function getPollSchedule(occupiedCities = 1) {
+  const defaultState = getCityState(defaultCityId);
+  const defaultKeyCount = defaultState ? defaultState.monitoredJunctions.length : 0;
+  return computeBudgetAwarePollIntervals({
+    dailyBudget: activeConfig.dailyTomTomNonTileBudget,
+    keyJunctionCounts: [defaultKeyCount],
+    activeCities: activeConfig.maxActiveCities,
+    occupiedCities
+  });
+}
 
 /**
  * Validate integer slippy-map tile coordinates against zoom grid bounds [0, 2^z).
@@ -577,7 +622,10 @@ function computeFreshness({
   lastAttemptFailed: failedMap,
   tomtomConfigured,
   hasAttemptedRefresh: attempted,
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  flowStaleMs = FLOW_STALE_MS,
+  incidentsStaleMs = INCIDENTS_STALE_MS,
+  weatherStaleMs = WEATHER_STALE_MS
 }) {
   const normalized = {
     flow: lastSuccessAt?.flow || null,
@@ -598,9 +646,9 @@ function computeFreshness({
 
   const activeSources = tomtomConfigured ? ['flow', 'incidents', 'weather'] : ['weather'];
   const thresholds = {
-    flow: FLOW_STALE_MS,
-    incidents: INCIDENTS_STALE_MS,
-    weather: WEATHER_STALE_MS
+    flow: flowStaleMs,
+    incidents: incidentsStaleMs,
+    weather: weatherStaleMs
   };
   const staleSources = [];
 
@@ -622,121 +670,167 @@ function computeFreshness({
   };
 }
 
-function getLiveStateSnapshot(nowMs = Date.now()) {
+/**
+ * @param {string} [cityId]
+ * @param {number} [nowMs]
+ */
+function getCityStateSnapshot(cityId = defaultCityId, nowMs = Date.now()) {
+  const state = cityStates.get(cityId);
+  if (!state) {
+    throw new Error(`Unknown city state: ${cityId}`);
+  }
+  const schedule = getPollSchedule(1);
   const freshness = computeFreshness({
-    lastSuccessAt: liveState.lastSuccessAt,
-    lastAttemptFailed,
+    lastSuccessAt: state.liveState.lastSuccessAt,
+    lastAttemptFailed: state.lastAttemptFailed,
     tomtomConfigured: Boolean(getTomTomKey()),
-    hasAttemptedRefresh,
-    nowMs
+    hasAttemptedRefresh: state.hasAttemptedRefresh,
+    nowMs,
+    flowStaleMs: Math.max(FLOW_STALE_MS, 2 * schedule.flowIntervalMs),
+    incidentsStaleMs: Math.max(INCIDENTS_STALE_MS, 2 * schedule.perCityIncidentsIntervalMs),
+    weatherStaleMs: WEATHER_STALE_MS
   });
-  liveState.updatedAt = freshness.updatedAt;
-  liveState.lastSuccessAt = freshness.lastSuccessAt;
-  liveState.stale = freshness.stale;
-  liveState.staleSources = freshness.staleSources;
-  liveState.tomtomConfigured = Boolean(getTomTomKey());
-  return liveState;
+  state.liveState.updatedAt = freshness.updatedAt;
+  state.liveState.lastSuccessAt = freshness.lastSuccessAt;
+  state.liveState.stale = freshness.stale;
+  state.liveState.staleSources = freshness.staleSources;
+  state.liveState.tomtomConfigured = Boolean(getTomTomKey());
+  return state.liveState;
 }
 
-function recomputePredictions() {
-  liveState.predictions = predictDeployments(
-    liveState.junctions,
-    liveState.incidents,
-    liveState.weather,
-    stations
+function getLiveStateSnapshot(nowMs = Date.now()) {
+  return getCityStateSnapshot(defaultCityId, nowMs);
+}
+
+/**
+ * @param {ReturnType<typeof createCityState>} state
+ */
+function recomputePredictions(state) {
+  state.liveState.predictions = predictDeployments(
+    state.liveState.junctions,
+    state.liveState.incidents,
+    state.liveState.weather,
+    state.city.policeStations,
+    state.junctionHistory,
+    state.city.thresholds
   );
-  liveState.tomtomConfigured = Boolean(getTomTomKey());
+  state.liveState.tomtomConfigured = Boolean(getTomTomKey());
 }
 
-async function refreshLiveState({ forceFlow = false, forceIncidents = false, forceWeather = false } = {}) {
-  if (refreshInFlight) return refreshInFlight;
+/**
+ * @param {string} [cityId]
+ * @param {{ forceFlow?: boolean, forceIncidents?: boolean, forceWeather?: boolean }} [opts]
+ */
+async function refreshCityState(
+  cityId = defaultCityId,
+  { forceFlow = false, forceIncidents = false, forceWeather = false } = {}
+) {
+  const state = cityStates.get(cityId);
+  if (!state) {
+    throw new Error(`Unknown city state: ${cityId}`);
+  }
+  if (state.refreshInFlight) return state.refreshInFlight;
 
-  refreshInFlight = (async () => {
+  state.refreshInFlight = (async () => {
     const now = Date.now();
     const tasks = [];
     const hasKey = Boolean(getTomTomKey());
+    const schedule = getPollSchedule(1);
+    const historyLimit = state.city.thresholds.historyLimit;
 
-    if (forceWeather || now - lastWeatherFetchMs >= WEATHER_POLL_INTERVAL_MS || !liveState.weather) {
+    if (
+      forceWeather ||
+      now - state.lastWeatherFetchMs >= WEATHER_POLL_INTERVAL_MS ||
+      !state.liveState.weather
+    ) {
       tasks.push(
-        fetchWeather()
+        fetchWeather(state.city)
           .then((w) => {
             const ts = Date.now();
-            liveState.weather = w;
-            lastWeatherFetchMs = ts;
-            liveState.lastSuccessAt.weather = new Date(ts).toISOString();
-            lastAttemptFailed.weather = false;
+            state.liveState.weather = w;
+            state.lastWeatherFetchMs = ts;
+            state.liveState.lastSuccessAt.weather = new Date(ts).toISOString();
+            state.lastAttemptFailed.weather = false;
           })
           .catch((err) => {
-            lastAttemptFailed.weather = true;
-            console.warn('Weather fetch failed:', redactKey(err.message));
+            state.lastAttemptFailed.weather = true;
+            console.warn(`Weather fetch failed (${cityId}):`, redactKey(err.message));
           })
       );
     }
 
     if (
       hasKey &&
-      (forceFlow || now - lastFlowFetchMs >= FLOW_POLL_INTERVAL_MS || liveState.junctions.length === 0)
+      (forceFlow ||
+        now - state.lastFlowFetchMs >= schedule.flowIntervalMs ||
+        state.liveState.junctions.length === 0)
     ) {
       tasks.push(
-        fetchAllJunctionFlows()
+        fetchAllJunctionFlows(state.monitoredJunctions)
           .then((flows) => {
             if (flows.length > 0) {
               const ts = Date.now();
               for (const flow of flows) {
-                const list = junctionHistory.get(flow.id) || [];
+                const list = state.junctionHistory.get(flow.id) || [];
                 list.push(flow.congestionPct);
-                if (list.length > HISTORY_LIMIT) list.shift();
-                junctionHistory.set(flow.id, list);
+                if (list.length > historyLimit) list.shift();
+                state.junctionHistory.set(flow.id, list);
               }
-              liveState.junctions = flows;
-              lastFlowFetchMs = ts;
-              liveState.lastSuccessAt.flow = new Date(ts).toISOString();
-              lastAttemptFailed.flow = false;
+              state.liveState.junctions = flows;
+              state.lastFlowFetchMs = ts;
+              state.liveState.lastSuccessAt.flow = new Date(ts).toISOString();
+              state.lastAttemptFailed.flow = false;
             } else {
-              lastAttemptFailed.flow = true;
-              console.warn('Flow fetch failed: 0 junctions succeeded');
+              state.lastAttemptFailed.flow = true;
+              console.warn(`Flow fetch failed (${cityId}): 0 junctions succeeded`);
             }
           })
           .catch((err) => {
-            lastAttemptFailed.flow = true;
-            console.warn('Flow fetch failed:', redactKey(err.message));
+            state.lastAttemptFailed.flow = true;
+            console.warn(`Flow fetch failed (${cityId}):`, redactKey(err.message));
           })
       );
     }
 
     if (
       hasKey &&
-      (forceIncidents || now - lastIncidentsFetchMs >= INCIDENTS_POLL_INTERVAL_MS)
+      (forceIncidents || now - state.lastIncidentsFetchMs >= schedule.perCityIncidentsIntervalMs)
     ) {
       tasks.push(
-        fetchIncidents()
+        fetchIncidents(state.city)
           .then((incs) => {
             const ts = Date.now();
-            liveState.incidents = incs;
-            lastIncidentsFetchMs = ts;
-            liveState.lastSuccessAt.incidents = new Date(ts).toISOString();
-            lastAttemptFailed.incidents = false;
+            state.liveState.incidents = incs;
+            state.lastIncidentsFetchMs = ts;
+            state.liveState.lastSuccessAt.incidents = new Date(ts).toISOString();
+            state.lastAttemptFailed.incidents = false;
           })
           .catch((err) => {
-            lastAttemptFailed.incidents = true;
-            console.warn('Incidents fetch failed:', redactKey(err.message));
+            state.lastAttemptFailed.incidents = true;
+            console.warn(`Incidents fetch failed (${cityId}):`, redactKey(err.message));
           })
       );
     }
 
-    if (tasks.length === 0) return getLiveStateSnapshot();
+    if (tasks.length === 0) return getCityStateSnapshot(cityId);
 
     await Promise.all(tasks);
-    hasAttemptedRefresh = true;
-    recomputePredictions();
-    const snapshot = getLiveStateSnapshot();
-    io.emit('traffic:state', snapshot);
+    state.hasAttemptedRefresh = true;
+    recomputePredictions(state);
+    const snapshot = getCityStateSnapshot(cityId);
+    if (cityId === defaultCityId) {
+      io.emit('traffic:state', snapshot);
+    }
     return snapshot;
   })().finally(() => {
-    refreshInFlight = null;
+    state.refreshInFlight = null;
   });
 
-  return refreshInFlight;
+  return state.refreshInFlight;
+}
+
+async function refreshLiveState(opts = {}) {
+  return refreshCityState(defaultCityId, opts);
 }
 
 // ── Socket.IO Lifecycle (proxy-aware per-IP cap) ──
@@ -747,21 +841,25 @@ const socketIpLimiter = createSocketIpLimiter({
 io.use(socketIpLimiter);
 
 io.on('connection', (socket) => {
-  socket.emit('traffic:state', getLiveStateSnapshot());
+  const defaultState = /** @type {ReturnType<typeof createCityState>} */ (getCityState(defaultCityId));
+  socket.emit('traffic:state', getCityStateSnapshot(defaultCityId));
 
+  const schedule = getPollSchedule(1);
   const hasKey = Boolean(getTomTomKey());
   const shouldRefreshFlow =
     hasKey &&
-    (!liveState.lastSuccessAt.flow || Date.now() - lastFlowFetchMs > FLOW_POLL_INTERVAL_MS);
+    (!defaultState.liveState.lastSuccessAt.flow ||
+      Date.now() - defaultState.lastFlowFetchMs > schedule.flowIntervalMs);
   const shouldRefreshWeather =
-    !liveState.lastSuccessAt.weather || Date.now() - lastWeatherFetchMs > WEATHER_POLL_INTERVAL_MS;
+    !defaultState.liveState.lastSuccessAt.weather ||
+    Date.now() - defaultState.lastWeatherFetchMs > WEATHER_POLL_INTERVAL_MS;
   const shouldRefreshIncidents =
     hasKey &&
-    (!liveState.lastSuccessAt.incidents ||
-      Date.now() - lastIncidentsFetchMs > INCIDENTS_POLL_INTERVAL_MS);
+    (!defaultState.liveState.lastSuccessAt.incidents ||
+      Date.now() - defaultState.lastIncidentsFetchMs > schedule.perCityIncidentsIntervalMs);
 
   if (shouldRefreshFlow || shouldRefreshWeather || shouldRefreshIncidents) {
-    refreshLiveState({
+    refreshCityState(defaultCityId, {
       forceFlow: shouldRefreshFlow,
       forceWeather: shouldRefreshWeather,
       forceIncidents: shouldRefreshIncidents
@@ -777,20 +875,98 @@ const trafficTileLimiter = createRateLimiter({ windowMs: 60_000, max: 600, name:
 const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 40, name: 'search', getTrustProxy });
 const routeLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'route', getTrustProxy });
 
+/**
+ * Resolve optional `?city=` query parameter via strict schema + allow-list.
+ * Returns null if invalid or unregistered (never echoes raw input).
+ * @param {unknown} rawCity
+ */
+function resolveRequestedCityId(rawCity) {
+  if (rawCity === undefined) return defaultCityId;
+  if (typeof rawCity !== 'string') return null;
+  if (!cityIdParamSchema.safeParse(rawCity).success) return null;
+  return hasCity(rawCity) ? rawCity : null;
+}
+
 // ── Routes ──
-app.get('/api/health', healthLimiter, (_req, res) => {
-  const snap = getLiveStateSnapshot();
-  res.json({
+app.get('/api/cities', healthLimiter, (_req, res) => {
+  const cities = listCities().map((city) => ({
+    id: city.id,
+    name: city.name,
+    country: city.country,
+    timezone: city.timezone,
+    locale: city.locale,
+    status: city.status,
+    map: city.map,
+    landmarks: city.landmarks,
+    junctionCount: city.junctions.length,
+    monitoredJunctionCount: city.junctions.filter((j) => j.key === true).length,
+    policeStationCount: city.policeStations.length
+  }));
+  return res.json({
+    defaultCityId,
+    maxActiveCities: activeConfig.maxActiveCities,
+    cities
+  });
+});
+
+app.get('/api/cities/:id', healthLimiter, (req, res) => {
+  const idParsed = cityIdParamSchema.safeParse(req.params.id);
+  const city = idParsed.success ? getCity(idParsed.data) : undefined;
+  if (!city) {
+    return res.status(404).json({ error: 'City not found' });
+  }
+  return res.json({
+    id: city.id,
+    name: city.name,
+    country: city.country,
+    timezone: city.timezone,
+    locale: city.locale,
+    status: city.status,
+    tomtomView: city.tomtomView,
+    map: city.map,
+    routeBbox: city.routeBbox,
+    search: city.search,
+    incidents: city.incidents,
+    landmarks: city.landmarks,
+    junctions: city.junctions,
+    policeStations: city.policeStations,
+    thresholds: city.thresholds,
+    sources: city.sources
+  });
+});
+
+app.get('/api/state', healthLimiter, (req, res) => {
+  const parsed = stateQuerySchema.safeParse(req.query);
+  const cityId = parsed.success ? parsed.data.city || defaultCityId : null;
+  if (!cityId || !hasCity(cityId)) {
+    return res.status(400).json({ error: 'Unknown or invalid city parameter' });
+  }
+  return res.json(getCityStateSnapshot(cityId));
+});
+
+app.get('/api/health', healthLimiter, (req, res) => {
+  const parsed = stateQuerySchema.safeParse(req.query);
+  const cityId = parsed.success ? parsed.data.city || defaultCityId : null;
+  if (!cityId || !hasCity(cityId)) {
+    return res.status(400).json({ error: 'Unknown or invalid city parameter' });
+  }
+  const cityState = /** @type {ReturnType<typeof createCityState>} */ (getCityState(cityId));
+  const snap = getCityStateSnapshot(cityId);
+  return res.json({
     status: 'ok',
+    city: cityId,
+    defaultCityId,
+    maxActiveCities: activeConfig.maxActiveCities,
     tomtomConfigured: Boolean(getTomTomKey()),
     updatedAt: snap.updatedAt,
     lastSuccessAt: snap.lastSuccessAt,
     stale: snap.stale,
     staleSources: snap.staleSources,
     activeClients: io.engine.clientsCount,
-    monitoredJunctions: monitoredJunctions.length,
+    monitoredJunctions: cityState.monitoredJunctions.length,
     alertsCount: snap.predictions.length,
     weatherLoaded: Boolean(snap.weather),
+    pollSchedule: getPollSchedule(1),
     metrics: {
       p95LatencyMs: latencyTracker.p95Ms(),
       trafficTileCache: tileCache.stats(),
@@ -807,6 +983,12 @@ app.get('/tiles/basemap/:z/:x/:y.png', basemapTileLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Invalid tile coordinates or parameters' });
   }
 
+  const cityId = queryParsed.data.city || defaultCityId;
+  const city = getCity(cityId);
+  if (!city) {
+    return res.status(400).json({ error: 'Unknown or invalid city parameter' });
+  }
+
   const key = getTomTomKey();
   if (!key) {
     return res.status(204).end();
@@ -815,7 +997,8 @@ app.get('/tiles/basemap/:z/:x/:y.png', basemapTileLimiter, async (req, res) => {
   const { z, x, y } = paramsParsed.data;
   const theme = queryParsed.data.theme === 'dark' ? 'dark' : 'light';
   const style = theme === 'dark' ? 'night' : 'main';
-  const cacheKey = `${theme}/${z}/${x}/${y}`;
+  const viewTag = city.tomtomView || 'default';
+  const cacheKey = `${viewTag}/${theme}/${z}/${x}/${y}`;
 
   try {
     const { value: buffer } = await basemapTileCache.dedupeFetch(
@@ -824,8 +1007,8 @@ app.get('/tiles/basemap/:z/:x/:y.png', basemapTileLimiter, async (req, res) => {
         if (!upstreamBudget.tryConsume('tomtomTile', 1)) {
           throw new HttpError(503, 'Daily TomTom tile quota exceeded');
         }
-        const viewParam = activeCity.tomtomView
-          ? `&view=${encodeURIComponent(activeCity.tomtomView)}`
+        const viewParam = city.tomtomView
+          ? `&view=${encodeURIComponent(city.tomtomView)}`
           : '';
         const upstreamUrl =
           `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
@@ -855,6 +1038,10 @@ app.get('/tiles/traffic/:z/:x/:y.png', trafficTileLimiter, async (req, res) => {
   const queryParsed = tileQuerySchema.safeParse(req.query);
   if (!paramsParsed.success || !queryParsed.success) {
     return res.status(400).json({ error: 'Invalid tile coordinates or parameters' });
+  }
+
+  if (queryParsed.data.city && !hasCity(queryParsed.data.city)) {
+    return res.status(400).json({ error: 'Unknown or invalid city parameter' });
   }
 
   const key = getTomTomKey();
@@ -906,6 +1093,15 @@ app.get('/api/search', searchLimiter, async (req, res) => {
     });
   }
 
+  const cityId = parsed.data.city || defaultCityId;
+  const city = getCity(cityId);
+  if (!city) {
+    return res.status(400).json({
+      error: 'Unknown or invalid city parameter',
+      results: []
+    });
+  }
+
   const key = getTomTomKey();
   if (!key) {
     return res.status(503).json({
@@ -927,7 +1123,7 @@ app.get('/api/search', searchLimiter, async (req, res) => {
     const url =
       `https://api.tomtom.com/search/2/search/${encodeURIComponent(q)}.json` +
       `?key=${encodeURIComponent(key)}` +
-      `&lat=${cityCenter.lat}&lon=${cityCenter.lng}&radius=${activeCity.search.biasRadiusM}&countrySet=${encodeURIComponent(activeCity.search.countrySet)}&limit=6`;
+      `&lat=${city.map.center.lat}&lon=${city.map.center.lng}&radius=${city.search.biasRadiusM}&countrySet=${encodeURIComponent(city.search.countrySet)}&limit=6`;
 
     const data = await fetchJson(url);
     const results = (Array.isArray(data?.results) ? data.results : [])
@@ -936,12 +1132,12 @@ app.get('/api/search', searchLimiter, async (req, res) => {
         const lng = Number(item?.position?.lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
         const name = item?.poi?.name || item?.address?.freeformAddress || q;
-        const address = item?.address?.freeformAddress || `${activeCity.name}, ${activeCity.country}`;
+        const address = item?.address?.freeformAddress || `${city.name}, ${city.country}`;
         return { name, address, lat, lng };
       })
       .filter(Boolean);
 
-    return res.json({ results });
+    return res.json({ city: city.id, results });
   } catch (err) {
     console.warn('Search failed:', redactKey(err.message));
     return res.status(502).json({ error: 'Place search service unavailable', results: [] });
@@ -974,10 +1170,19 @@ async function fetchTomTomRoute(fromLat, fromLng, toLat, toLng, routeType) {
 }
 
 app.get('/api/route', routeLimiter, async (req, res) => {
-  const parsed = routeQuerySchema.safeParse(req.query);
+  const cityId = resolveRequestedCityId(req.query.city);
+  const city = cityId ? getCity(cityId) : undefined;
+  const cityRouteSchema = cityId ? routeSchemasByCity.get(cityId) : undefined;
+  if (!city || !cityRouteSchema) {
+    return res.status(400).json({
+      error: 'Unknown or invalid city parameter'
+    });
+  }
+
+  const parsed = cityRouteSchema.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json({
-      error: `Valid ${activeCity.name} coordinates (fromLat, fromLng, toLat, toLng) are required`
+      error: `Valid ${city.name} coordinates (fromLat, fromLng, toLat, toLng) are required`
     });
   }
 
@@ -1006,23 +1211,35 @@ app.get('/api/route', routeLimiter, async (req, res) => {
   }
 });
 
+/** @type {ReturnType<typeof setInterval>[]} */
 let pollTimers = [];
 
+function stopPollingLoops() {
+  for (const timer of pollTimers) clearInterval(timer);
+  pollTimers = [];
+}
+
+function getActiveTimerCount() {
+  return pollTimers.length;
+}
+
 function startPollingLoops() {
+  stopPollingLoops();
+  const schedule = getPollSchedule(1);
   pollTimers.push(
     setInterval(() => {
       if (io.engine.clientsCount > 0) {
-        refreshLiveState({ forceFlow: true });
+        refreshCityState(defaultCityId, { forceFlow: true });
       }
-    }, FLOW_POLL_INTERVAL_MS),
+    }, schedule.flowIntervalMs),
     setInterval(() => {
       if (io.engine.clientsCount > 0) {
-        refreshLiveState({ forceIncidents: true });
+        refreshCityState(defaultCityId, { forceIncidents: true });
       }
-    }, INCIDENTS_POLL_INTERVAL_MS),
+    }, schedule.perCityIncidentsIntervalMs),
     setInterval(() => {
       if (io.engine.clientsCount > 0) {
-        refreshLiveState({ forceWeather: true });
+        refreshCityState(defaultCityId, { forceWeather: true });
       }
     }, WEATHER_POLL_INTERVAL_MS)
   );
@@ -1031,8 +1248,7 @@ function startPollingLoops() {
 function setupGracefulShutdown() {
   const shutdown = (signal) => {
     console.log(`Received ${signal}; shutting down gracefully...`);
-    for (const timer of pollTimers) clearInterval(timer);
-    pollTimers = [];
+    stopPollingLoops();
     io.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 5000).unref();
@@ -1053,6 +1269,7 @@ function setTestOverrides({ fetch: customFetch, config: customConfig } = {}) {
 }
 
 function resetStateForTests() {
+  stopPollingLoops();
   fetchImpl = globalThis.fetch;
   activeConfig = loadConfig();
   app.set('trust proxy', activeConfig.trustProxy > 0 ? activeConfig.trustProxy : false);
@@ -1066,23 +1283,27 @@ function resetStateForTests() {
   searchLimiter.reset();
   routeLimiter.reset();
   socketIpLimiter.reset();
-  junctionHistory.clear();
-  liveState.updatedAt = null;
-  liveState.lastSuccessAt = { flow: null, incidents: null, weather: null };
-  liveState.stale = false;
-  liveState.staleSources = [];
-  liveState.tomtomConfigured = Boolean(getTomTomKey());
-  liveState.weather = null;
-  liveState.junctions = [];
-  liveState.incidents = [];
-  liveState.predictions = [];
-  lastAttemptFailed.flow = false;
-  lastAttemptFailed.incidents = false;
-  lastAttemptFailed.weather = false;
-  hasAttemptedRefresh = false;
-  lastFlowFetchMs = 0;
-  lastIncidentsFetchMs = 0;
-  lastWeatherFetchMs = 0;
+  const tomtomConfigured = Boolean(getTomTomKey());
+  for (const state of cityStates.values()) {
+    state.junctionHistory.clear();
+    state.liveState.updatedAt = null;
+    state.liveState.lastSuccessAt = { flow: null, incidents: null, weather: null };
+    state.liveState.stale = false;
+    state.liveState.staleSources = [];
+    state.liveState.tomtomConfigured = tomtomConfigured;
+    state.liveState.weather = null;
+    state.liveState.junctions = [];
+    state.liveState.incidents = [];
+    state.liveState.predictions = [];
+    state.lastAttemptFailed.flow = false;
+    state.lastAttemptFailed.incidents = false;
+    state.lastAttemptFailed.weather = false;
+    state.hasAttemptedRefresh = false;
+    state.lastFlowFetchMs = 0;
+    state.lastIncidentsFetchMs = 0;
+    state.lastWeatherFetchMs = 0;
+    state.refreshInFlight = null;
+  }
 }
 
 if (require.main === module) {
@@ -1109,6 +1330,17 @@ module.exports = {
   extractIncidentPoint,
   setTestOverrides,
   resetStateForTests,
+  cityStates,
+  routeSchemasByCity,
+  getCityStateSnapshot,
+  getLiveStateSnapshot,
+  refreshCityState,
+  refreshLiveState,
+  startPollingLoops,
+  stopPollingLoops,
+  getActiveTimerCount,
+  getPollSchedule,
+  setupGracefulShutdown,
   socketIpLimiter,
   upstreamBudget,
   tileCache,

@@ -5,6 +5,11 @@ const assert = require('node:assert/strict');
 
 const { LruCache } = require('../src/lru');
 const {
+  computeBudgetAwarePollIntervals,
+  projectDailyNonTileCalls,
+  DAY_MS
+} = require('../src/pollBudget');
+const {
   loadConfig,
   redactSecrets,
   safeFetch,
@@ -377,4 +382,80 @@ test('createSocketIpLimiter isolates clients behind proxy and blocks spoofed byp
   // Disconnecting frees slot
   disconnectHandlers[0]();
   assert.equal(limiter.getCount('203.0.113.10'), 1);
+});
+
+test('computeBudgetAwarePollIntervals reserves 20% budget and enforces round-robin incident cadence', () => {
+  // Single-city Nagpur default (16 key junctions, dailyBudget=2000 => 1600 polling budget)
+  const nagpurPlan = computeBudgetAwarePollIntervals({
+    dailyBudget: 2000,
+    keyJunctionCounts: [16]
+  });
+  assert.equal(nagpurPlan.pollingBudget, 1600);
+  assert.equal(nagpurPlan.reservedOnDemandBudget, 400);
+  assert.equal(nagpurPlan.budgetConstrained, true);
+  assert.equal(nagpurPlan.flowIntervalMs > 240_000, true);
+  assert.equal(nagpurPlan.projectedDailyCalls <= 1600, true);
+  assert.equal(nagpurPlan.perCityIncidentsIntervalMs, 3 * nagpurPlan.flowIntervalMs);
+
+  // Generous budget keeps base 4m / 12m intervals unconstrained
+  const unconstrained = computeBudgetAwarePollIntervals({
+    dailyBudget: 10_000,
+    keyJunctionCounts: [16]
+  });
+  assert.equal(unconstrained.budgetConstrained, false);
+  assert.equal(unconstrained.flowIntervalMs, 240_000);
+  assert.equal(unconstrained.perCityIncidentsIntervalMs, 720_000);
+  assert.equal(unconstrained.projectedDailyCalls <= unconstrained.pollingBudget, true);
+
+  // Round-robin over 3 cities with MAX_ACTIVE_CITIES=1 enforces perCityIncidentsIntervalMs >= 3 * cityTurnIntervalMs
+  const roundRobin = computeBudgetAwarePollIntervals({
+    dailyBudget: 2000,
+    keyJunctionCounts: [16, 10, 10],
+    activeCities: 1,
+    occupiedCities: 3
+  });
+  assert.equal(roundRobin.roundsPerCity, 3);
+  assert.equal(roundRobin.cityTurnIntervalMs, 3 * roundRobin.flowIntervalMs);
+  assert.equal(roundRobin.perCityIncidentsIntervalMs >= 3 * roundRobin.cityTurnIntervalMs, true);
+  assert.equal(roundRobin.projectedDailyCalls <= 1600, true);
+  const crossCheck = projectDailyNonTileCalls({
+    flowIntervalMs: roundRobin.flowIntervalMs,
+    perCityIncidentsIntervalMs: roundRobin.perCityIncidentsIntervalMs,
+    keyJunctionCounts: [16, 10, 10],
+    activeCities: 1,
+    occupiedCities: 3
+  });
+  assert.equal(crossCheck.totalCallsPerDay, roundRobin.projectedDailyCalls);
+
+  // Extreme low budget caps at DAY_MS and flags cappedAtMaxInterval
+  const tiny = computeBudgetAwarePollIntervals({
+    dailyBudget: 10,
+    keyJunctionCounts: [16]
+  });
+  assert.equal(tiny.flowIntervalMs <= DAY_MS, true);
+  assert.equal(tiny.cappedAtMaxInterval, true);
+
+  assert.throws(
+    () => computeBudgetAwarePollIntervals({ dailyBudget: 0, keyJunctionCounts: [16] }),
+    RangeError
+  );
+  assert.throws(
+    () =>
+      computeBudgetAwarePollIntervals({
+        dailyBudget: 2000,
+        pollBudgetRatio: 1.5,
+        keyJunctionCounts: [16]
+      }),
+    RangeError
+  );
+});
+
+test('loadConfig validates MAX_ACTIVE_CITIES in [1, 10] with default 1', () => {
+  assert.equal(loadConfig({}).maxActiveCities, 1);
+  assert.equal(loadConfig({ MAX_ACTIVE_CITIES: '1' }).maxActiveCities, 1);
+  assert.equal(loadConfig({ MAX_ACTIVE_CITIES: '10' }).maxActiveCities, 10);
+
+  for (const bad of ['0', '11', '', 'abc']) {
+    assert.throws(() => loadConfig({ MAX_ACTIVE_CITIES: bad }), /MAX_ACTIVE_CITIES/);
+  }
 });
