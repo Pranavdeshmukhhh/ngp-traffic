@@ -2,11 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
 const { LruCache } = require('../src/lru');
 const { loadConfig, redactSecrets, safeFetch } = require('../src/security');
+const { getCity, DEFAULT_CITY_ID } = require('../src/cityRegistry');
 const {
   createTileErrorTracker,
   DEFAULT_TILE_FALLBACK_THRESHOLD,
@@ -23,9 +22,7 @@ const {
   extractIncidentPoint
 } = require('../server');
 
-const stations = JSON.parse(
-  fs.readFileSync(path.join(__dirname, '..', 'data', 'police-stations.json'), 'utf8')
-);
+const stations = getCity(DEFAULT_CITY_ID).policeStations;
 
 const baseJunction = {
   id: 'J001',

@@ -14,7 +14,7 @@ Powered by **TomTom Traffic, Map Display & Routing APIs** and **Open-Meteo** wea
    - Proxies TomTom Map Display raster basemaps (`main` for light mode, `night` for dark mode, `tileSize=512`, `view=IN`) with a 10-minute bounded in-memory cache (`800` tiles max), falling back cleanly to OpenStreetMap if keyless.
    - Proxies TomTom Traffic Flow Raster Tiles (`relative0` / `relative0-dark`, `tileSize=512`) on the backend so `TOMTOM_API_KEY` never reaches the browser, with a 120s bounded cache (`500` tiles max) and `Cache-Control: public, max-age=120`.
 2. **Quota-Safe Real-Time Polling + Per-Source Freshness**
-   - **Flow Segment Data**: Polls 16 key Nagpur corridors from `data/nagpur-junctions.json` every 4 minutes **only while active Socket.IO clients are connected**.
+   - **Flow Segment Data**: Polls 16 key Nagpur corridors from `config/cities/nagpur.json` every 4 minutes **only while active Socket.IO clients are connected**.
    - **Traffic Incidents v5**: Polls Nagpur bounding box (`78.95,21.05,79.20,21.25`) every 12 minutes while clients are online.
    - **Open-Meteo Weather**: Polls Nagpur weather (`21.1458, 79.0882`) every 15 minutes (free non-commercial tier, CC BY 4.0, no API key required).
    - **Freshness Telemetry**: Tracks per-source `lastSuccessAt` (`flow`, `incidents`, `weather`) and computes `stale` + `staleSources` over Socket.IO (`traffic:state`) and `/api/health`. Failed polls never advance `updatedAt`.
@@ -23,7 +23,7 @@ Powered by **TomTom Traffic, Map Display & Routing APIs** and **Open-Meteo** wea
    - **Road Clearing Needed (`HIGH`)**: Active `roadClosure`, roadworks/closure incident within `150 m` with `>= 25%` congestion, or Nagpur rainfall `>= 5 mm/hr` with `>= 50%` congestion.
    - **Traffic Officer Needed (`HIGH`)**: Accident/breakdown within `150 m` (`100 m` if free-flowing) or `>= 60%` congestion.
    - **Standby / Monitor (`MEDIUM`)**: `>= 40%` congestion.
-   - Computes a composite `severityScore` (`0–100`) and 3-snapshot `trend` (`worsening`, `improving`, `stable`), and attaches the nearest Nagpur police station (`data/police-stations.json`) via Haversine distance to every `HIGH` alert. Advisories are heuristic estimates for operator assistance.
+   - Computes a composite `severityScore` (`0–100`) and 3-snapshot `trend` (`worsening`, `improving`, `stable`), and attaches the nearest Nagpur police station (`config/cities/nagpur.json`) via Haversine distance to every `HIGH` alert. Advisories are heuristic estimates for operator assistance.
 4. **Shortest vs. Fastest Live Routing (`/api/search`, `/api/route`)**
    - Autocomplete search biased to Nagpur (`radius=25000`, `countrySet=IN`).
    - Parallel TomTom Routing requests comparing **Fastest (Live)** vs. **Shortest** distance routes with live traffic delay.

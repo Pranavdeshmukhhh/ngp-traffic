@@ -11,6 +11,7 @@
     "dev": "node server.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "validate:cities": "node scripts/validate-cities.js",
     "test": "node --test test/*.test.js",
     "test:coverage": "node --test --experimental-test-coverage test/*.test.js"
   },
