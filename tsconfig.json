@@ -13,7 +13,8 @@
   "include": [
     "server.js",
     "src/**/*.js",
-    "test/**/*.js"
+    "test/**/*.js",
+    "public/js/tile-fallback.js"
   ],
   "exclude": [
     "node_modules"

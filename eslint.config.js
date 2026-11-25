@@ -30,7 +30,8 @@ module.exports = [
         ...globals.browser,
         L: 'readonly',
         io: 'readonly',
-        NGP_I18N: 'readonly'
+        NGP_I18N: 'readonly',
+        NGP_TILE_FALLBACK: 'readonly'
       }
     },
     rules: {
