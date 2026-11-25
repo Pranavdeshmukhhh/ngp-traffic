@@ -21,13 +21,14 @@ const DEFAULT_THRESHOLDS = Object.freeze({
 });
 
 /**
- * Derive TomTom basemap political border view from ISO-2 country code.
- * Note: 'Unified' vs country-specific view availability should be verified per city.
+ * Derive default TomTom basemap political border view from ISO-2 country code.
+ * Returns 'IN' for India; omits the view parameter (undefined) for other countries
+ * unless explicitly set in the city config.
  * @param {string} country
- * @returns {string}
+ * @returns {string | undefined}
  */
 function deriveTomTomView(country) {
-  return country === 'IN' ? 'IN' : 'Unified';
+  return country === 'IN' ? 'IN' : undefined;
 }
 
 /**

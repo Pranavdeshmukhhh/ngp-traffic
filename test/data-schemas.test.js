@@ -107,6 +107,37 @@ test('citySchema rejects invalid structures, geo bounds, IDs, counts, and unknow
   assert.equal(validMinimal.data.incidents.language, 'en-GB');
   assert.equal(validMinimal.warnings.length, 1);
 
+  // Non-IN cities omit tomtomView unless explicitly configured
+  const nonInOmitted = validateCityConfig(
+    {
+      ...base,
+      id: 'london',
+      name: 'London',
+      country: 'GB',
+      timezone: 'Europe/London',
+      locale: 'en-GB'
+    },
+    { expectedId: 'london' }
+  );
+  assert.equal(nonInOmitted.ok, true);
+  assert.equal(nonInOmitted.data.tomtomView, undefined);
+  assert.equal(nonInOmitted.data.search.countrySet, 'GB');
+
+  const nonInExplicit = validateCityConfig(
+    {
+      ...base,
+      id: 'london',
+      name: 'London',
+      country: 'GB',
+      timezone: 'Europe/London',
+      locale: 'en-GB',
+      tomtomView: 'IL'
+    },
+    { expectedId: 'london' }
+  );
+  assert.equal(nonInExplicit.ok, true);
+  assert.equal(nonInExplicit.data.tomtomView, 'IL');
+
   // Unknown key rejected (.strict)
   const unknownKey = validateCityConfig({ ...base, extraField: 123 }, { expectedId: 'testcity' });
   assert.equal(unknownKey.ok, false);

@@ -831,9 +831,12 @@ app.get('/tiles/basemap/:z/:x/:y.png', basemapTileLimiter, async (req, res) => {
         if (!upstreamBudget.tryConsume('tomtomTile', 1)) {
           throw new HttpError(503, 'Daily TomTom tile quota exceeded');
         }
+        const viewParam = activeCity.tomtomView
+          ? `&view=${encodeURIComponent(activeCity.tomtomView)}`
+          : '';
         const upstreamUrl =
           `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
-          `?tileSize=512&view=${encodeURIComponent(activeCity.tomtomView)}&key=${encodeURIComponent(key)}`;
+          `?tileSize=512${viewParam}&key=${encodeURIComponent(key)}`;
         const upstream = await safeFetch(upstreamUrl, { timeoutMs: UPSTREAM_TIMEOUT_MS }, fetchImpl);
         if (!upstream.ok) {
           const errText = redactKey(await upstream.text().catch(() => ''));
