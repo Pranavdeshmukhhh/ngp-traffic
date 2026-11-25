@@ -72,4 +72,13 @@ Open `http://localhost:3000`.
 
 ```bash
 npm test
+npm run validate:cities
 ```
+
+## Licensing & City Data
+
+- **Code:** Software source code is licensed under the **MIT License** ([`LICENSE`](LICENSE)).
+- **City Data (`config/cities/`):** City data files are **not** covered by the MIT License:
+  - **Nagpur (`nagpur.json`):** Origin not recorded; maintainer to document.
+  - **Pune & Bengaluru (`pune.json`, `bengaluru.json`):** OpenStreetMap (**ODbL 1.0**, © OpenStreetMap contributors attribution) and Wikipedia (**CC BY-SA 4.0**).
+  - **Share-alike:** Implications for bundled/derived datasets are **UNVERIFIED** (needs legal review). See [`config/cities/DATA_LICENSE.md`](config/cities/DATA_LICENSE.md).

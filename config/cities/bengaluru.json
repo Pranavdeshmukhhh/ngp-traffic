@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "id": "bengaluru",
+  "name": "Bengaluru",
+  "country": "IN",
+  "timezone": "Asia/Kolkata",
+  "locale": "en-IN",
+  "status": "experimental",
+  "tomtomView": "IN",
+  "map": {
+    "center": {
+      "lat": 12.976794,
+      "lng": 77.590082
+    },
+    "zoom": 12,
+    "minZoom": 10,
+    "maxZoom": 19,
+    "bbox": {
+      "south": 12.82,
+      "west": 77.48,
+      "north": 13.1,
+      "east": 77.76
+    }
+  },
+  "routeBbox": {
+    "south": 12.75,
+    "west": 77.4,
+    "north": 13.25,
+    "east": 77.82
+  },
+  "search": {
+    "biasRadiusM": 35000,
+    "countrySet": "IN"
+  },
+  "incidents": {
+    "language": "en-GB"
+  },
+  "landmarks": [
+    {
+      "id": "majestic",
+      "label": "Majestic",
+      "name": "Kempegowda Bus Station",
+      "lat": 12.97679,
+      "lng": 77.5726,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Kempegowda_Bus_Station"
+    },
+    {
+      "id": "ksr-railway",
+      "label": "KSR Railway",
+      "name": "Bengaluru City railway station",
+      "lat": 12.978333,
+      "lng": 77.569444,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Bengaluru_City_railway_station"
+    },
+    {
+      "id": "mg-road",
+      "label": "MG Road",
+      "name": "M G Road, Bengaluru",
+      "lat": 12.973801,
+      "lng": 77.611885,
+      "sourceUrl": "https://en.wikipedia.org/wiki/M_G_Road,_Bengaluru"
+    },
+    {
+      "id": "whitefield",
+      "label": "Whitefield",
+      "name": "Whitefield",
+      "lat": 12.97,
+      "lng": 77.715,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Whitefield,_Bengaluru"
+    },
+    {
+      "id": "electronic-city",
+      "label": "Electronic City",
+      "name": "Electronic City",
+      "lat": 12.85,
+      "lng": 77.67,
+      "sourceUrl": "https://en.wikipedia.org/wiki/Electronic_City"
+    }
+  ],
+  "junctions": [
+    {
+      "id": "BLR001",
+      "name": "Outer Ring Rd / NH44 (Hebbal)",
+      "lat": 13.042752,
+      "lng": 77.590143,
+      "roadType": "highway_entry",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/3735711204"
+    },
+    {
+      "id": "BLR002",
+      "name": "Marathahalli Bridge (Munekolala / Chinnappanahalli)",
+      "lat": 12.95684,
+      "lng": 77.704884,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/956716898"
+    },
+    {
+      "id": "BLR003",
+      "name": "Trinity Circle (Richmond Rd / Trinity Church Rd)",
+      "lat": 12.971522,
+      "lng": 77.619507,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/10784153212"
+    },
+    {
+      "id": "BLR004",
+      "name": "Anil Kumble Circle",
+      "lat": 12.976518,
+      "lng": 77.601799,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/10016346056"
+    },
+    {
+      "id": "BLR005",
+      "name": "Hudson Circle (JC Rd)",
+      "lat": 12.966845,
+      "lng": 77.587941,
+      "roadType": "major_intersection",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/286679311"
+    },
+    {
+      "id": "BLR006",
+      "name": "KR Puram (Old Madras Rd / Devasandra Main Rd)",
+      "lat": 13.008328,
+      "lng": 77.695889,
+      "roadType": "highway_entry",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/1837297484"
+    },
+    {
+      "id": "BLR007",
+      "name": "Indiranagar (100ft Rd / CMH Rd)",
+      "lat": 12.978422,
+      "lng": 77.640813,
+      "roadType": "commercial",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/11187974841"
+    },
+    {
+      "id": "BLR008",
+      "name": "Koramangala (Mahayogi Vemana Rd / 8th Main)",
+      "lat": 12.935194,
+      "lng": 77.62449,
+      "roadType": "commercial",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/309592695"
+    },
+    {
+      "id": "BLR009",
+      "name": "MG Road (Commissariat Rd)",
+      "lat": 12.974084,
+      "lng": 77.612127,
+      "roadType": "commercial",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/334473824"
+    },
+    {
+      "id": "BLR010",
+      "name": "Majestic (Kempegowda Rd / Dhanvanthari Rd)",
+      "lat": 12.975563,
+      "lng": 77.574674,
+      "roadType": "landmark_junction",
+      "key": true,
+      "sourceUrl": "https://www.openstreetmap.org/node/10841729419"
+    }
+  ],
+  "policeStations": [],
+  "sources": {
+    "junctions": "OpenStreetMap at-grade intersection nodes via api.openstreetmap.org/0.6; center from OSM relation/7902476 (see per-junction sourceUrl)",
+    "policeStations": "None — omitted until a verifiable open municipal dataset is available",
+    "retrievedOn": "2026-11-25",
+    "licence": "Center & Junctions: OpenStreetMap contributors (ODbL 1.0); Landmarks: Wikipedia contributors (CC BY-SA 4.0)",
+    "notes": "Experimental starter config. policeStations is intentionally empty because no verifiable open police-station dataset was available, so HIGH advisories run without nearest-station info. Whitefield (12.97, 77.715) and Electronic City (12.85, 77.67) are rounded area centres from Wikipedia. All 10 junctions are named at-grade OSM intersection nodes but remain UNVERIFIED against TomTom flowSegmentData."
+  }
+}
