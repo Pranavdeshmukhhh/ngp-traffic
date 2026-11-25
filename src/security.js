@@ -22,7 +22,8 @@ const envSchema = z.object({
   DAILY_TOMTOM_NON_TILE_BUDGET: z.coerce.number().int().min(10).max(100_000).default(2000),
   DAILY_TOMTOM_TILE_BUDGET: z.coerce.number().int().min(50).max(500_000).default(45_000),
   ALLOW_KEYLESS_START: z.string().optional().default(''),
-  FEATURE_WEATHER_RISK: z.string().optional().default('true')
+  FEATURE_WEATHER_RISK: z.string().optional().default('true'),
+  CITY: z.string().optional()
 });
 
 /**
@@ -69,7 +70,8 @@ function loadConfig(env = process.env) {
     allowedOrigins,
     dailyTomTomNonTileBudget: data.DAILY_TOMTOM_NON_TILE_BUDGET,
     dailyTomTomTileBudget: data.DAILY_TOMTOM_TILE_BUDGET,
-    featureWeatherRisk: data.FEATURE_WEATHER_RISK !== 'false' && data.FEATURE_WEATHER_RISK !== '0'
+    featureWeatherRisk: data.FEATURE_WEATHER_RISK !== 'false' && data.FEATURE_WEATHER_RISK !== '0',
+    city: data.CITY
   };
 }
 
@@ -97,15 +99,20 @@ const searchQuerySchema = z
   })
   .strict();
 
-// Nagpur / Vidarbha corridor bounding box so callers cannot abuse TomTom routing globally
-const routeQuerySchema = z
-  .object({
-    fromLat: z.coerce.number().min(20.5).max(21.8),
-    fromLng: z.coerce.number().min(78.4).max(79.8),
-    toLat: z.coerce.number().min(20.5).max(21.8),
-    toLng: z.coerce.number().min(78.4).max(79.8)
-  })
-  .strict();
+/**
+ * Build a strict coordinate-bounds Zod schema from a city's routing bbox.
+ * @param {{ south: number, west: number, north: number, east: number }} bbox
+ */
+function createRouteQuerySchema(bbox) {
+  return z
+    .object({
+      fromLat: z.coerce.number().min(bbox.south).max(bbox.north),
+      fromLng: z.coerce.number().min(bbox.west).max(bbox.east),
+      toLat: z.coerce.number().min(bbox.south).max(bbox.north),
+      toLng: z.coerce.number().min(bbox.west).max(bbox.east)
+    })
+    .strict();
+}
 
 /**
  * Redact API keys and query credentials from logs or error messages.
@@ -312,7 +319,7 @@ module.exports = {
   tileParamsSchema,
   tileQuerySchema,
   searchQuerySchema,
-  routeQuerySchema,
+  createRouteQuerySchema,
   redactSecrets,
   safeFetch,
   getClientIp,

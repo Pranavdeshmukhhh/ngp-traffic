@@ -9,7 +9,7 @@ module.exports = [
   },
   js.configs.recommended,
   {
-    files: ['server.js', 'src/**/*.js', 'test/**/*.js', 'eslint.config.js'],
+    files: ['server.js', 'src/**/*.js', 'scripts/**/*.js', 'test/**/*.js', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',

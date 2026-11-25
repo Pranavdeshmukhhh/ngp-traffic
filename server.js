@@ -8,7 +8,6 @@ try {
   // .env is optional; environment variables may be injected directly.
 }
 
-const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const express = require('express');
@@ -16,12 +15,13 @@ const cors = require('cors');
 const helmet = require('helmet');
 const { Server } = require('socket.io');
 const { LruCache } = require('./src/lru');
+const { getCity, getDefaultCityId } = require('./src/cityRegistry');
 const {
   loadConfig,
   tileParamsSchema,
   tileQuerySchema,
   searchQuerySchema,
-  routeQuerySchema,
+  createRouteQuerySchema,
   redactSecrets,
   safeFetch,
   createRateLimiter,
@@ -33,8 +33,12 @@ let activeConfig = loadConfig();
 let fetchImpl = globalThis.fetch;
 
 const PORT = activeConfig.port;
-const NAGPUR_CENTER = { lat: 21.1458, lng: 79.0882 };
-const NAGPUR_BBOX = '78.95,21.05,79.20,21.25';
+const activeCity = getCity(getDefaultCityId());
+const cityCenter = activeCity.map.center;
+const cityBboxStr =
+  `${activeCity.map.bbox.west},${activeCity.map.bbox.south},` +
+  `${activeCity.map.bbox.east},${activeCity.map.bbox.north}`;
+const routeQuerySchema = createRouteQuerySchema(activeCity.routeBbox);
 
 const TILE_CACHE_TTL_MS = 120 * 1000;
 const TILE_CACHE_MAX_ENTRIES = 500;
@@ -55,18 +59,13 @@ function getTomTomKey() {
 
 const ROADWORKS_OR_CLOSURE_CODES = new Set([7, 8, 9]);
 const ACCIDENT_OR_BREAKDOWN_CODES = new Set([1, 14]);
-const INCIDENT_RADIUS_M = 150;
-const ACCIDENT_FREEFLOW_RADIUS_M = 100;
-const HISTORY_LIMIT = 3;
+const cityThresholds = activeCity.thresholds;
+const HISTORY_LIMIT = cityThresholds.historyLimit;
 
 const junctionHistory = new Map();
 
-const junctions = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'data', 'nagpur-junctions.json'), 'utf8')
-);
-const stations = JSON.parse(
-  fs.readFileSync(path.join(__dirname, 'data', 'police-stations.json'), 'utf8')
-);
+const junctions = activeCity.junctions;
+const stations = activeCity.policeStations;
 const monitoredJunctions = junctions.filter((j) => j.key === true);
 
 /**
@@ -85,7 +84,7 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
 }
 
 /**
- * Find the nearest Nagpur police station to a coordinate.
+ * Find the nearest police station to a coordinate.
  */
 function findNearestPoliceStation(lat, lng, stationList) {
   if (!Array.isArray(stationList) || stationList.length === 0) return null;
@@ -151,24 +150,25 @@ function extractIncidentPoint(geometry) {
 /**
  * Compute congestion trend from the last 2-3 snapshots for a junction.
  */
-function computeTrend(snapshots) {
+function computeTrend(snapshots, trendDeltaPct = cityThresholds.trendDeltaPct) {
   if (!Array.isArray(snapshots) || snapshots.length < 2) return 'stable';
   const delta = snapshots[snapshots.length - 1] - snapshots[0];
-  if (delta >= 8) return 'worsening';
-  if (delta <= -8) return 'improving';
+  if (delta >= trendDeltaPct) return 'worsening';
+  if (delta <= -trendDeltaPct) return 'improving';
   return 'stable';
 }
 
 /**
  * Predict officer and road-clearing deployment advisories from live flow,
- * active incidents, rainfall, and Nagpur police station locations.
+ * active incidents, rainfall, and police station locations.
  */
 function predictDeployments(
   junctionFlows,
   incidents,
   weather,
   stationList,
-  historyMap = junctionHistory
+  historyMap = junctionHistory,
+  thresholds = cityThresholds
 ) {
   if (!Array.isArray(junctionFlows) || junctionFlows.length === 0) return [];
 
@@ -188,17 +188,21 @@ function predictDeployments(
 
     const nearbyIncidents = activeIncidents.filter((inc) => {
       if (!Number.isFinite(inc?.lat) || !Number.isFinite(inc?.lng)) return false;
-      return haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= INCIDENT_RADIUS_M;
+      return haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= thresholds.incidentRadiusM;
     });
 
     const verifiedAccidentWithin100m = nearbyIncidents.find(
       (inc) =>
         Number(inc.iconCategory) === 1 &&
-        haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= ACCIDENT_FREEFLOW_RADIUS_M
+        haversineMeters(j.lat, j.lng, inc.lat, inc.lng) <= thresholds.accidentFreeflowRadiusM
     );
 
-    // Free-flow guard: never flag full-speed junctions unless roadClosure or verified accident <= 100m
-    if (congestionPct < 15 && j.roadClosure !== true && !verifiedAccidentWithin100m) {
+    // Free-flow guard: never flag full-speed junctions unless roadClosure or verified accident within range
+    if (
+      congestionPct < thresholds.freeFlowGuardPct &&
+      j.roadClosure !== true &&
+      !verifiedAccidentWithin100m
+    ) {
       continue;
     }
 
@@ -217,8 +221,8 @@ function predictDeployments(
 
     if (
       j.roadClosure === true ||
-      (Boolean(clearingIncident) && congestionPct >= 25) ||
-      (rainfallMm >= 5 && congestionPct >= 50)
+      (Boolean(clearingIncident) && congestionPct >= thresholds.clearingIncidentCongestionPct) ||
+      (rainfallMm >= thresholds.heavyRainMmHr && congestionPct >= thresholds.rainClearingCongestionPct)
     ) {
       severity = 'HIGH';
       category = 'clearing';
@@ -227,25 +231,32 @@ function predictDeployments(
       if (j.roadClosure === true) {
         reason = 'Active road closure reported on corridor';
       } else if (clearingIncident) {
-        reason = clearingIncident.description || 'Roadworks or lane closure within 150 m';
+        reason =
+          clearingIncident.description ||
+          `Roadworks or lane closure within ${thresholds.incidentRadiusM} m`;
       } else {
         reason = `Heavy rain (${rainfallMm.toFixed(1)} mm/hr) with ${congestionPct}% congestion`;
       }
     } else if (
-      (congestionPct < 15 ? Boolean(verifiedAccidentWithin100m) : Boolean(officerIncident)) ||
-      congestionPct >= 60
+      (congestionPct < thresholds.freeFlowGuardPct
+        ? Boolean(verifiedAccidentWithin100m)
+        : Boolean(officerIncident)) ||
+      congestionPct >= thresholds.officerCongestionPct
     ) {
       severity = 'HIGH';
       category = 'officer';
       badge = 'Officer Needed';
       action = 'Traffic Officer Needed';
-      const activeOfficerInc = congestionPct < 15 ? verifiedAccidentWithin100m : officerIncident;
+      const activeOfficerInc =
+        congestionPct < thresholds.freeFlowGuardPct ? verifiedAccidentWithin100m : officerIncident;
       if (activeOfficerInc) {
-        reason = activeOfficerInc.description || 'Accident or breakdown within 150 m';
+        reason =
+          activeOfficerInc.description ||
+          `Accident or breakdown within ${thresholds.incidentRadiusM} m`;
       } else {
         reason = `Severe congestion (${congestionPct}% below free-flow speed)`;
       }
-    } else if (congestionPct >= 40) {
+    } else if (congestionPct >= thresholds.monitorCongestionPct) {
       severity = 'MEDIUM';
       category = 'monitor';
       badge = 'Monitor';
@@ -260,16 +271,21 @@ function predictDeployments(
       Number(j.currentTravelTime || 0) - Number(j.freeFlowTravelTime || 0)
     );
     const speedPart = 0.55 * congestionPct;
-    const delayPart = Math.min(1, delaySec / 300) * 25;
+    const delayPart = Math.min(1, delaySec / thresholds.delayCapSec) * 25;
     const incidentPart = nearbyIncidents.length > 0 || j.roadClosure === true ? 15 : 0;
-    const rainPart = rainfallMm >= 5 ? 10 : rainfallMm >= 3 ? 5 : 0;
+    const rainPart =
+      rainfallMm >= thresholds.heavyRainMmHr
+        ? 10
+        : rainfallMm >= thresholds.moderateRainMmHr
+          ? 5
+          : 0;
     const severityScore = Math.max(
       0,
       Math.min(100, Math.round(speedPart + delayPart + incidentPart + rainPart))
     );
 
     const snapshots = historyMap instanceof Map ? historyMap.get(j.id) || [] : [];
-    const trend = computeTrend(snapshots);
+    const trend = computeTrend(snapshots, thresholds.trendDeltaPct);
 
     predictions.push({
       id: j.id,
@@ -314,8 +330,8 @@ async function fetchJson(url) {
 async function fetchWeather() {
   upstreamBudget.tryConsume('openMeteo', 1);
   const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${NAGPUR_CENTER.lat}` +
-    `&longitude=${NAGPUR_CENTER.lng}&current=temperature_2m,precipitation,weather_code`;
+    `https://api.open-meteo.com/v1/forecast?latitude=${cityCenter.lat}` +
+    `&longitude=${cityCenter.lng}&current=temperature_2m,precipitation,weather_code`;
   const data = await fetchJson(url);
   const current = data?.current || {};
   return {
@@ -393,7 +409,7 @@ async function fetchIncidents() {
   const url =
     `https://api.tomtom.com/traffic/services/5/incidentDetails` +
     `?key=${encodeURIComponent(key)}` +
-    `&bbox=${NAGPUR_BBOX}&fields=${fields}&language=en-GB&timeValidityFilter=present`;
+    `&bbox=${cityBboxStr}&fields=${fields}&language=${encodeURIComponent(activeCity.incidents.language)}&timeValidityFilter=present`;
 
   const data = await fetchJson(url);
   const list = Array.isArray(data?.incidents) ? data.incidents : [];
@@ -815,9 +831,12 @@ app.get('/tiles/basemap/:z/:x/:y.png', basemapTileLimiter, async (req, res) => {
         if (!upstreamBudget.tryConsume('tomtomTile', 1)) {
           throw new HttpError(503, 'Daily TomTom tile quota exceeded');
         }
+        const viewParam = activeCity.tomtomView
+          ? `&view=${encodeURIComponent(activeCity.tomtomView)}`
+          : '';
         const upstreamUrl =
           `https://api.tomtom.com/map/1/tile/basic/${style}/${z}/${x}/${y}.png` +
-          `?tileSize=512&view=IN&key=${encodeURIComponent(key)}`;
+          `?tileSize=512${viewParam}&key=${encodeURIComponent(key)}`;
         const upstream = await safeFetch(upstreamUrl, { timeoutMs: UPSTREAM_TIMEOUT_MS }, fetchImpl);
         if (!upstream.ok) {
           const errText = redactKey(await upstream.text().catch(() => ''));
@@ -915,7 +934,7 @@ app.get('/api/search', searchLimiter, async (req, res) => {
     const url =
       `https://api.tomtom.com/search/2/search/${encodeURIComponent(q)}.json` +
       `?key=${encodeURIComponent(key)}` +
-      `&lat=${NAGPUR_CENTER.lat}&lon=${NAGPUR_CENTER.lng}&radius=25000&countrySet=IN&limit=6`;
+      `&lat=${cityCenter.lat}&lon=${cityCenter.lng}&radius=${activeCity.search.biasRadiusM}&countrySet=${encodeURIComponent(activeCity.search.countrySet)}&limit=6`;
 
     const data = await fetchJson(url);
     const results = (Array.isArray(data?.results) ? data.results : [])
@@ -924,7 +943,7 @@ app.get('/api/search', searchLimiter, async (req, res) => {
         const lng = Number(item?.position?.lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
         const name = item?.poi?.name || item?.address?.freeformAddress || q;
-        const address = item?.address?.freeformAddress || 'Nagpur, Maharashtra';
+        const address = item?.address?.freeformAddress || `${activeCity.name}, ${activeCity.country}`;
         return { name, address, lat, lng };
       })
       .filter(Boolean);
@@ -965,7 +984,7 @@ app.get('/api/route', routeLimiter, async (req, res) => {
   const parsed = routeQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json({
-      error: 'Valid Nagpur coordinates (fromLat, fromLng, toLat, toLng) are required'
+      error: `Valid ${activeCity.name} coordinates (fromLat, fromLng, toLat, toLng) are required`
     });
   }
 
