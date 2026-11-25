@@ -3,7 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  app,
+  server,
+  io,
   setTestOverrides,
   resetStateForTests,
   upstreamBudget
@@ -26,9 +27,11 @@ function makePngResponse(bytes = 'mock-png-bytes', status = 200) {
 }
 
 test('Integration suite: routes, mocked upstreams, failure paths, rate limits & CSP', async (t) => {
-  const httpServer = app.listen(0);
+  const httpServer = server.listen(0);
   await new Promise((resolve) => httpServer.once('listening', resolve));
-  const { port } = httpServer.address();
+  const addr = httpServer.address();
+  assert.ok(addr && typeof addr === 'object');
+  const { port } = addr;
   const baseUrl = `http://127.0.0.1:${port}`;
 
   t.after(async () => {
@@ -258,5 +261,133 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     }
     assert.equal(lastStatus, 429);
     assert.ok(Number(retryAfter) >= 1);
+  });
+
+  await t.test('Proxy-aware rate limiter blocks spoofed X-Forwarded-For rotation and isolates real clients', async () => {
+    const routeMock = async () =>
+      makeJsonResponse({
+        routes: [
+          { summary: { lengthInMeters: 1000, travelTimeInSeconds: 120, trafficDelayInSeconds: 0 }, legs: [] }
+        ]
+      });
+
+    // 1) trustProxy=0: rotating spoofed X-Forwarded-For headers still shares the peer IP bucket and hits 429
+    resetStateForTests();
+    setTestOverrides({
+      config: { tomtomApiKey: TEST_TOMTOM_KEY, trustProxy: 0 },
+      fetch: routeMock
+    });
+
+    let directLast = 200;
+    for (let i = 0; i < 21; i++) {
+      const res = await fetch(
+        `${baseUrl}/api/route?fromLat=21.1458&fromLng=79.0882&toLat=21.1068&toLng=79.0634`,
+        { headers: { 'x-forwarded-for': `198.51.100.${i + 1}` } }
+      );
+      directLast = res.status;
+    }
+    assert.equal(directLast, 429);
+
+    // 2) trustProxy=1: attacker rotating leftmost XFF cannot bypass cap for client .50, while client .51 is unaffected
+    resetStateForTests();
+    setTestOverrides({
+      config: { tomtomApiKey: TEST_TOMTOM_KEY, trustProxy: 1 },
+      fetch: routeMock
+    });
+
+    let proxiedLast = 200;
+    for (let i = 0; i < 21; i++) {
+      const res = await fetch(
+        `${baseUrl}/api/route?fromLat=21.1458&fromLng=79.0882&toLat=21.1068&toLng=79.0634`,
+        { headers: { 'x-forwarded-for': `203.0.113.${i + 1}, 198.51.100.50` } }
+      );
+      proxiedLast = res.status;
+    }
+    assert.equal(proxiedLast, 429);
+
+    const otherClient = await fetch(
+      `${baseUrl}/api/route?fromLat=21.1458&fromLng=79.0882&toLat=21.1068&toLng=79.0634`,
+      { headers: { 'x-forwarded-for': '198.51.100.51' } }
+    );
+    assert.equal(otherClient.status, 200);
+
+    // 3) >4 KB spoofed X-Forwarded-For prefix fails closed to peer IP instead of truncating the right end
+    resetStateForTests();
+    setTestOverrides({
+      config: { tomtomApiKey: TEST_TOMTOM_KEY, trustProxy: 1 },
+      fetch: routeMock
+    });
+
+    let hugeHeaderLast = 200;
+    for (let i = 0; i < 21; i++) {
+      const spoofedPrefix = `203.0.113.${(i % 200) + 1}, `.repeat(320);
+      const hugeXff = `${spoofedPrefix}198.51.100.${i + 10}`;
+      assert.ok(hugeXff.length > 4096);
+      const res = await fetch(
+        `${baseUrl}/api/route?fromLat=21.1458&fromLng=79.0882&toLat=21.1068&toLng=79.0634`,
+        { headers: { 'x-forwarded-for': hugeXff } }
+      );
+      hugeHeaderLast = res.status;
+    }
+    assert.equal(hugeHeaderLast, 429);
+  });
+
+  await t.test('Socket.IO per-IP connection cap enforces trustProxy hops and fails closed on >4 KB XFF', async () => {
+    resetStateForTests();
+    setTestOverrides({ config: { trustProxy: 1 } });
+
+    /** @param {string} xff */
+    async function connectSocketPolling(xff) {
+      const openRes = await fetch(`${baseUrl}/socket.io/?EIO=4&transport=polling`, {
+        headers: { 'x-forwarded-for': xff }
+      });
+      const openText = await openRes.text();
+      const sid = JSON.parse(openText.slice(1)).sid;
+
+      await fetch(`${baseUrl}/socket.io/?EIO=4&transport=polling&sid=${encodeURIComponent(sid)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain;charset=UTF-8', 'x-forwarded-for': xff },
+        body: '40'
+      });
+
+      const pollRes = await fetch(
+        `${baseUrl}/socket.io/?EIO=4&transport=polling&sid=${encodeURIComponent(sid)}`,
+        { headers: { 'x-forwarded-for': xff } }
+      );
+      return pollRes.text();
+    }
+
+    try {
+      // Open 8 allowed sockets from 203.0.113.5 (with varying spoofed leftmost XFF)
+      for (let i = 0; i < 8; i++) {
+        const body = await connectSocketPolling(`1.1.1.${i + 1}, 203.0.113.5`);
+        assert.equal(body.includes('40{'), true, `Socket ${i + 1} expected connect ack, got ${body}`);
+      }
+
+      // 9th socket from same resolved IP must be rejected even with a new spoofed leftmost IP
+      const ninth = await connectSocketPolling('9.9.9.9, 203.0.113.5');
+      assert.equal(ninth.includes('Too many concurrent connections'), true);
+
+      // Different real client IP behind same proxy is still accepted
+      const other = await connectSocketPolling('203.0.113.6');
+      assert.equal(other.includes('40{'), true);
+
+      // Oversized (>4 KB) X-Forwarded-For fails closed to peer IP (127.0.0.1), pinning all 8 sockets on peer
+      io.disconnectSockets(true);
+      resetStateForTests();
+      setTestOverrides({ config: { trustProxy: 1 } });
+
+      for (let i = 0; i < 8; i++) {
+        const spoofedPrefix = `203.0.113.${(i % 200) + 1}, `.repeat(320);
+        const hugeXff = `${spoofedPrefix}198.51.100.${i + 20}`;
+        assert.ok(hugeXff.length > 4096);
+        const body = await connectSocketPolling(hugeXff);
+        assert.equal(body.includes('40{'), true, `Oversized XFF socket ${i + 1} expected connect ack, got ${body}`);
+      }
+      const hugeNinth = await connectSocketPolling(`${'203.0.113.9, '.repeat(350)}198.51.100.99`);
+      assert.equal(hugeNinth.includes('Too many concurrent connections'), true);
+    } finally {
+      io.disconnectSockets(true);
+    }
   });
 });

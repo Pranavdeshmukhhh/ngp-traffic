@@ -9,6 +9,8 @@ services:
         value: production
       - key: PORT
         value: 3000
+      - key: TRUST_PROXY
+        value: "1" # verify hop count for your host
       - key: TOMTOM_API_KEY
         sync: false
       - key: ALLOWED_ORIGIN

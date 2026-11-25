@@ -25,6 +25,7 @@ const {
   redactSecrets,
   safeFetch,
   createRateLimiter,
+  createSocketIpLimiter,
   UpstreamBudget,
   LatencyTracker
 } = require('./src/security');
@@ -460,6 +461,7 @@ class HttpError extends Error {
 const helmetMiddleware = /** @type {any} */ (helmet);
 
 app.disable('x-powered-by');
+app.set('trust proxy', activeConfig.trustProxy > 0 ? activeConfig.trustProxy : false);
 app.use(
   helmetMiddleware({
     contentSecurityPolicy: {
@@ -737,22 +739,12 @@ async function refreshLiveState({ forceFlow = false, forceIncidents = false, for
   return refreshInFlight;
 }
 
-// ── Socket.IO Lifecycle (per-IP cap) ──
-const socketCountsByIp = new Map();
-io.use((socket, next) => {
-  const ip = String(socket.handshake.address || 'unknown');
-  const count = socketCountsByIp.get(ip) || 0;
-  if (count >= MAX_SOCKETS_PER_IP) {
-    return next(new Error('Too many concurrent connections from this IP'));
-  }
-  socketCountsByIp.set(ip, count + 1);
-  socket.once('disconnect', () => {
-    const nextCount = (socketCountsByIp.get(ip) || 1) - 1;
-    if (nextCount <= 0) socketCountsByIp.delete(ip);
-    else socketCountsByIp.set(ip, nextCount);
-  });
-  return next();
+// ── Socket.IO Lifecycle (proxy-aware per-IP cap) ──
+const socketIpLimiter = createSocketIpLimiter({
+  maxPerIp: MAX_SOCKETS_PER_IP,
+  getTrustProxy: () => activeConfig.trustProxy
 });
+io.use(socketIpLimiter);
 
 io.on('connection', (socket) => {
   socket.emit('traffic:state', getLiveStateSnapshot());
@@ -778,11 +770,12 @@ io.on('connection', (socket) => {
 });
 
 // ── Rate Limiters ──
-const healthLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: 'health' });
-const basemapTileLimiter = createRateLimiter({ windowMs: 60_000, max: 600, name: 'basemap-tiles' });
-const trafficTileLimiter = createRateLimiter({ windowMs: 60_000, max: 600, name: 'traffic-tiles' });
-const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 40, name: 'search' });
-const routeLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'route' });
+const getTrustProxy = () => activeConfig.trustProxy;
+const healthLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: 'health', getTrustProxy });
+const basemapTileLimiter = createRateLimiter({ windowMs: 60_000, max: 600, name: 'basemap-tiles', getTrustProxy });
+const trafficTileLimiter = createRateLimiter({ windowMs: 60_000, max: 600, name: 'traffic-tiles', getTrustProxy });
+const searchLimiter = createRateLimiter({ windowMs: 60_000, max: 40, name: 'search', getTrustProxy });
+const routeLimiter = createRateLimiter({ windowMs: 60_000, max: 20, name: 'route', getTrustProxy });
 
 // ── Routes ──
 app.get('/api/health', healthLimiter, (_req, res) => {
@@ -1053,12 +1046,16 @@ function setupGracefulShutdown() {
  */
 function setTestOverrides({ fetch: customFetch, config: customConfig } = {}) {
   if (customFetch) fetchImpl = customFetch;
-  if (customConfig) activeConfig = { ...activeConfig, ...customConfig };
+  if (customConfig) {
+    activeConfig = { ...activeConfig, ...customConfig };
+    app.set('trust proxy', activeConfig.trustProxy > 0 ? activeConfig.trustProxy : false);
+  }
 }
 
 function resetStateForTests() {
   fetchImpl = globalThis.fetch;
   activeConfig = loadConfig();
+  app.set('trust proxy', activeConfig.trustProxy > 0 ? activeConfig.trustProxy : false);
   tileCache.clear();
   basemapTileCache.clear();
   upstreamBudget.reset();
@@ -1068,6 +1065,7 @@ function resetStateForTests() {
   trafficTileLimiter.reset();
   searchLimiter.reset();
   routeLimiter.reset();
+  socketIpLimiter.reset();
   junctionHistory.clear();
   liveState.updatedAt = null;
   liveState.lastSuccessAt = { flow: null, incidents: null, weather: null };
@@ -1111,6 +1109,7 @@ module.exports = {
   extractIncidentPoint,
   setTestOverrides,
   resetStateForTests,
+  socketIpLimiter,
   upstreamBudget,
   tileCache,
   basemapTileCache

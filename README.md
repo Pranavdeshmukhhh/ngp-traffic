@@ -58,6 +58,7 @@ Open `http://localhost:3000`.
 | --- | --- | --- | --- |
 | `TOMTOM_API_KEY` | Yes (for live traffic/search/routing/TomTom basemaps) | `""` | Server-only TomTom API key |
 | `PORT` | No | `3000` | HTTP server port |
+| `TRUST_PROXY` | No | `0` | Trusted reverse-proxy hop count (`0–5`; set `1` behind Render/Nginx — verify hop count for your host) |
 | `ALLOWED_ORIGIN` | No | `*` | Allowed CORS origin(s), comma-separated |
 
 ## API Endpoints
