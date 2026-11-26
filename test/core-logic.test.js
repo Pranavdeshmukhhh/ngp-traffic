@@ -11,6 +11,7 @@ const {
 } = require('../src/pollBudget');
 const {
   loadConfig,
+  isValidBearerToken,
   redactSecrets,
   safeFetch,
   normalizeIp,
@@ -27,6 +28,12 @@ const {
   predictDeployments,
   computeTrend,
   computeFreshness,
+  computeStaleThresholdMs,
+  STALE_GRACE_MS,
+  cityStates,
+  getCityStateSnapshot,
+  setTestOverrides,
+  resetStateForTests,
   isValidTileCoord,
   haversineMeters,
   findNearestPoliceStation,
@@ -396,6 +403,7 @@ test('computeBudgetAwarePollIntervals reserves 20% budget and enforces round-rob
   assert.equal(nagpurPlan.flowIntervalMs > 240_000, true);
   assert.equal(nagpurPlan.projectedDailyCalls <= 1600, true);
   assert.equal(nagpurPlan.perCityIncidentsIntervalMs, 3 * nagpurPlan.flowIntervalMs);
+  assert.equal('incidentsIntervalMs' in nagpurPlan, false);
 
   // Generous budget keeps base 4m / 12m intervals unconstrained
   const unconstrained = computeBudgetAwarePollIntervals({
@@ -457,5 +465,75 @@ test('loadConfig validates MAX_ACTIVE_CITIES in [1, 10] with default 1', () => {
 
   for (const bad of ['0', '11', '', 'abc']) {
     assert.throws(() => loadConfig({ MAX_ACTIVE_CITIES: bad }), /MAX_ACTIVE_CITIES/);
+  }
+});
+
+test('isValidBearerToken enforces constant-time bearer matching and fails closed', () => {
+  assert.equal(isValidBearerToken('Bearer my-secret', ''), false);
+  assert.equal(isValidBearerToken(undefined, 'my-secret'), false);
+  assert.equal(isValidBearerToken('Basic my-secret', 'my-secret'), false);
+  assert.equal(isValidBearerToken('Bearer wrong', 'my-secret'), false);
+  assert.equal(isValidBearerToken('Bearer my-secret', 'my-secret'), true);
+});
+
+test('Stale threshold follows 2 * actual interval + 60s grace across budget-constrained and unconstrained modes', (t) => {
+  const startMs = Date.parse('2026-11-26T00:00:00.000Z');
+  t.mock.timers.enable({ apis: ['Date'], now: startMs });
+
+  try {
+    // 1) Default budget (2000 -> flowIntervalMs=873000): 1.5 intervals is fresh, 2.5 intervals is stale
+    resetStateForTests();
+    const constrainedIntervalMs = 873_000;
+    assert.equal(
+      computeStaleThresholdMs(constrainedIntervalMs),
+      2 * constrainedIntervalMs + STALE_GRACE_MS
+    );
+
+    setTestOverrides({
+      config: { tomtomApiKey: 'mock_key_1234', dailyTomTomNonTileBudget: 2000 }
+    });
+    const nagpurState = cityStates.get('nagpur');
+    assert.ok(nagpurState);
+    const t0Iso = new Date(startMs).toISOString();
+    nagpurState.polled = true;
+    nagpurState.hasAttemptedRefresh = true;
+    nagpurState.liveState.lastSuccessAt = { flow: t0Iso, incidents: t0Iso, weather: t0Iso };
+
+    // Advance 1.5 flow intervals (1,309,500 ms < 2*873000 + 60000 = 1,806,000 ms)
+    t.mock.timers.tick(1.5 * constrainedIntervalMs);
+    const midSnap = getCityStateSnapshot('nagpur');
+    assert.equal(midSnap.stale, false);
+    assert.deepEqual(midSnap.staleSources, []);
+
+    // Advance to 2.5 flow intervals total (2,182,500 ms > 1,806,000 ms)
+    t.mock.timers.tick(1.0 * constrainedIntervalMs);
+    const lateSnap = getCityStateSnapshot('nagpur');
+    assert.equal(lateSnap.stale, true);
+    assert.equal(lateSnap.staleSources.includes('flow'), true);
+
+    // 2) Single-city unconstrained (budget=10000 -> flowIntervalMs=240000): threshold 2*240000 + 60000 = 540000
+    resetStateForTests();
+    const now2 = Date.now();
+    const unconstrainedIntervalMs = 240_000;
+    setTestOverrides({
+      config: { tomtomApiKey: 'mock_key_1234', dailyTomTomNonTileBudget: 10_000 }
+    });
+    const state2 = cityStates.get('nagpur');
+    assert.ok(state2);
+    const t2Iso = new Date(now2).toISOString();
+    state2.polled = true;
+    state2.hasAttemptedRefresh = true;
+    state2.liveState.lastSuccessAt = { flow: t2Iso, incidents: t2Iso, weather: t2Iso };
+
+    t.mock.timers.tick(1.5 * unconstrainedIntervalMs);
+    assert.equal(getCityStateSnapshot('nagpur').stale, false);
+
+    t.mock.timers.tick(1.0 * unconstrainedIntervalMs);
+    const stale2 = getCityStateSnapshot('nagpur');
+    assert.equal(stale2.stale, true);
+    assert.equal(stale2.staleSources.includes('flow'), true);
+  } finally {
+    t.mock.timers.reset();
+    resetStateForTests();
   }
 });

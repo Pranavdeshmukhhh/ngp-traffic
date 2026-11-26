@@ -176,7 +176,6 @@ function computeBudgetAwarePollIntervals({
   return {
     flowIntervalMs: chosenFlowMs,
     perCityIncidentsIntervalMs,
-    incidentsIntervalMs: perCityIncidentsIntervalMs,
     cityTurnIntervalMs: Math.round(roundsPerCity * chosenFlowMs),
     roundsPerCity,
     activeCities: nActive,

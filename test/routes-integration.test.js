@@ -1,5 +1,8 @@
 'use strict';
 
+const net = require('node:net');
+const { spawn } = require('node:child_process');
+const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -12,9 +15,11 @@ const {
   startPollingLoops,
   stopPollingLoops,
   getActiveTimerCount,
+  tileCache,
   basemapTileCache,
   upstreamBudget
 } = require('../server');
+const { getCity, hasCity } = require('../src/cityRegistry');
 
 const TEST_TOMTOM_KEY = 'mock_tomtom_key_99999';
 
@@ -45,7 +50,7 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     await new Promise((resolve) => httpServer.close(resolve));
   });
 
-  await t.test('GET /api/health returns security metrics and CSP headers', async () => {
+  await t.test('GET /api/health is minimal public JSON, /api/metrics is bearer-protected, and CSP headers hold', async () => {
     resetStateForTests();
     const res = await fetch(`${baseUrl}/api/health`);
     assert.equal(res.status, 200);
@@ -61,10 +66,75 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     assert.equal(homeRes.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
 
     const body = await res.json();
+    assert.deepEqual(Object.keys(body).sort(), [
+      'city',
+      'defaultCityId',
+      'flowIntervalMs',
+      'lastSuccessAt',
+      'monitoredJunctions',
+      'polled',
+      'stale',
+      'status',
+      'tomtomConfigured'
+    ]);
     assert.equal(body.status, 'ok');
-    assert.equal(typeof body.metrics.p95LatencyMs, 'number');
-    assert.ok(body.metrics.trafficTileCache);
-    assert.ok(body.metrics.upstreamToday);
+    assert.equal(body.polled, true);
+    assert.equal(typeof body.flowIntervalMs, 'number');
+
+    const forbiddenPublicKeys = [
+      'dailyBudget',
+      'pollBudgetRatio',
+      'pollingBudget',
+      'reservedOnDemandBudget',
+      'projectedDailyCalls',
+      'projectedFlowCalls',
+      'projectedIncidentCalls',
+      'budgetConstrained',
+      'cappedAtMaxInterval',
+      'roundsPerCity',
+      'activeCities',
+      'occupiedCities',
+      'cityTurnIntervalMs',
+      'perCityIncidentsIntervalMs',
+      'incidentsIntervalMs',
+      'maxActiveCities',
+      'pollSchedule',
+      'metrics',
+      'activeClients',
+      'alertsCount',
+      'weatherLoaded',
+      'updatedAt',
+      'staleSources'
+    ];
+    for (const key of forbiddenPublicKeys) {
+      assert.equal(key in body, false, `Public /api/health must not expose "${key}"`);
+    }
+
+    // /api/metrics is disabled (404) when METRICS_TOKEN is unset
+    const disabledMetrics = await fetch(`${baseUrl}/api/metrics`);
+    assert.equal(disabledMetrics.status, 404);
+
+    // /api/metrics requires Bearer token (401 without/wrong token, 200 with valid token)
+    setTestOverrides({ config: { metricsToken: 'test-metrics-secret' } });
+    const noAuthMetrics = await fetch(`${baseUrl}/api/metrics`);
+    assert.equal(noAuthMetrics.status, 401);
+    const badAuthMetrics = await fetch(`${baseUrl}/api/metrics`, {
+      headers: { authorization: 'Bearer wrong-token' }
+    });
+    assert.equal(badAuthMetrics.status, 401);
+
+    const okMetricsRes = await fetch(`${baseUrl}/api/metrics`, {
+      headers: { authorization: 'Bearer test-metrics-secret' }
+    });
+    assert.equal(okMetricsRes.status, 200);
+    const okMetrics = await okMetricsRes.json();
+    assert.ok(okMetrics.pollSchedule);
+    assert.equal(typeof okMetrics.pollSchedule.perCityIncidentsIntervalMs, 'number');
+    assert.equal('incidentsIntervalMs' in okMetrics.pollSchedule, false);
+    assert.equal(okMetrics.maxActiveCities, 1);
+    assert.equal(typeof okMetrics.metrics.p95LatencyMs, 'number');
+    assert.ok(okMetrics.metrics.trafficTileCache);
+    assert.ok(okMetrics.metrics.upstreamToday);
   });
 
   await t.test('GET /api/search validates strict schema and handles mocked success + 502 error', async () => {
@@ -340,7 +410,10 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
 
   await t.test('Socket.IO per-IP connection cap enforces trustProxy hops and fails closed on >4 KB XFF', async () => {
     resetStateForTests();
-    setTestOverrides({ config: { trustProxy: 1 } });
+    setTestOverrides({
+      config: { trustProxy: 1, tomtomApiKey: '' },
+      fetch: async () => makeJsonResponse({ current: { temperature_2m: 30, precipitation: 0, weather_code: 0 } })
+    });
 
     /** @param {string} xff */
     async function connectSocketPolling(xff) {
@@ -381,7 +454,10 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
       // Oversized (>4 KB) X-Forwarded-For fails closed to peer IP (127.0.0.1), pinning all 8 sockets on peer
       io.disconnectSockets(true);
       resetStateForTests();
-      setTestOverrides({ config: { trustProxy: 1 } });
+      setTestOverrides({
+        config: { trustProxy: 1, tomtomApiKey: '' },
+        fetch: async () => makeJsonResponse({ current: { temperature_2m: 30, precipitation: 0, weather_code: 0 } })
+      });
 
       for (let i = 0; i < 8; i++) {
         const spoofedPrefix = `203.0.113.${(i % 200) + 1}, `.repeat(320);
@@ -397,19 +473,49 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     }
   });
 
-  await t.test('Multi-city metadata, state, and ?city= scoping with zero raw echo and zero wasted quota', async () => {
+  await t.test('Multi-city metadata, honest inactive state, and ?city= scoping with view-isolated tile caches', async () => {
     resetStateForTests();
+    let fetchCalls = 0;
+    setTestOverrides({
+      config: { tomtomApiKey: TEST_TOMTOM_KEY },
+      fetch: async () => {
+        fetchCalls += 1;
+        return makeJsonResponse({});
+      }
+    });
 
-    // GET /api/cities returns catalog summary
+    // GET /api/cities schema shape: plain string ids + explicit structured cities objects
     const citiesRes = await fetch(`${baseUrl}/api/cities`);
     assert.equal(citiesRes.status, 200);
     const citiesBody = await citiesRes.json();
+    assert.deepEqual(Object.keys(citiesBody).sort(), ['cities', 'defaultCityId', 'ids']);
     assert.equal(citiesBody.defaultCityId, 'nagpur');
-    assert.equal(citiesBody.maxActiveCities, 1);
+    assert.deepEqual(citiesBody.ids, ['bengaluru', 'nagpur', 'pune']);
+    for (const id of citiesBody.ids) {
+      assert.match(id, /^[a-z0-9-]+$/);
+    }
     assert.equal(citiesBody.cities.length, 3);
+    for (const entry of citiesBody.cities) {
+      assert.deepEqual(Object.keys(entry).sort(), [
+        'id',
+        'junctions',
+        'keyJunctions',
+        'landmarks',
+        'name',
+        'stations',
+        'status'
+      ]);
+    }
     const puneSummary = citiesBody.cities.find((c) => c.id === 'pune');
-    assert.ok(puneSummary);
-    assert.equal(puneSummary.monitoredJunctionCount, 10);
+    assert.deepEqual(puneSummary, {
+      id: 'pune',
+      name: 'Pune',
+      status: 'experimental',
+      junctions: 10,
+      keyJunctions: 10,
+      stations: 0,
+      landmarks: 5
+    });
 
     // GET /api/cities/:id returns full config for valid city, 404 with no raw echo otherwise
     const puneRes = await fetch(`${baseUrl}/api/cities/pune`);
@@ -426,33 +532,59 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     assert.equal(traversalCityRes.status, 404);
     assert.equal((await traversalCityRes.text()).includes('passwd'), false);
 
-    // GET /api/state returns per-city state and rejects unknown/invalid city without echo
-    const defaultStateRes = await fetch(`${baseUrl}/api/state`);
-    assert.equal(defaultStateRes.status, 200);
-    assert.equal((await defaultStateRes.json()).cityId, 'nagpur');
-
+    // Honest inactive city state: Pune is valid but not polled -> ZERO upstream calls, polled:false, stale:true
     const puneStateRes = await fetch(`${baseUrl}/api/state?city=pune`);
     assert.equal(puneStateRes.status, 200);
-    assert.equal((await puneStateRes.json()).cityId, 'pune');
+    const puneState = await puneStateRes.json();
+    assert.equal(puneState.cityId, 'pune');
+    assert.equal(puneState.polled, false);
+    assert.equal(puneState.stale, true);
+    assert.equal(puneState.lastSuccessAt, null);
+    assert.equal(puneState.updatedAt, null);
+    assert.equal(puneState.weather, null);
+    assert.deepEqual(puneState.junctions, []);
+    assert.deepEqual(puneState.incidents, []);
+    assert.deepEqual(puneState.predictions, []);
+
+    const puneHealthRes = await fetch(`${baseUrl}/api/health?city=pune`);
+    assert.equal(puneHealthRes.status, 200);
+    const puneHealth = await puneHealthRes.json();
+    assert.equal(puneHealth.city, 'pune');
+    assert.equal(puneHealth.polled, false);
+    assert.equal(puneHealth.stale, true);
+    assert.equal(puneHealth.lastSuccessAt, null);
+    assert.equal(puneHealth.flowIntervalMs, null);
+    assert.equal(puneHealth.monitoredJunctions, 10);
+    assert.equal(fetchCalls, 0);
+
+    // Active default city stays polled:true
+    const defaultState = await (await fetch(`${baseUrl}/api/state`)).json();
+    assert.equal(defaultState.cityId, 'nagpur');
+    assert.equal(defaultState.polled, true);
+    assert.equal(fetchCalls, 0);
 
     const unknownStateRes = await fetch(`${baseUrl}/api/state?city=unknown_xyz`);
     assert.equal(unknownStateRes.status, 400);
-    assert.equal((await unknownStateRes.text()).includes('unknown_xyz'), false);
+    const unknownStateBody = await unknownStateRes.json();
+    assert.equal(unknownStateBody.error, 'Unknown or invalid city parameter');
+    assert.equal(JSON.stringify(unknownStateBody).includes('unknown_xyz'), false);
 
     const traversalStateRes = await fetch(`${baseUrl}/api/state?city=../../etc/passwd`);
     assert.equal(traversalStateRes.status, 400);
     assert.equal((await traversalStateRes.text()).includes('passwd'), false);
 
-    // Unknown ?city= consumes 0 upstream quota across /api/search, /api/route, /api/health, /tiles/basemap
+    // Unknown ?city= consumes 0 upstream quota across /api/search, /api/route, /api/health, /tiles/basemap, /tiles/traffic
     let fetchedUrls = [];
     setTestOverrides({
       config: { tomtomApiKey: TEST_TOMTOM_KEY },
       fetch: async (url) => {
-        fetchedUrls.push(String(url));
-        if (String(url).includes('/map/1/tile/')) {
-          return makePngResponse('tile-ok');
+        const u = String(url);
+        fetchedUrls.push(u);
+        if (u.includes('/map/1/tile/') || u.includes('/traffic/map/4/tile/')) {
+          const isInView = u.includes('view=IN');
+          return makePngResponse(isInView ? 'tile-view-in' : 'tile-view-default');
         }
-        if (String(url).includes('/search/2/search/')) {
+        if (u.includes('/search/2/search/')) {
           return makeJsonResponse({
             results: [
               {
@@ -479,7 +611,8 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
       '/api/search?q=Shaniwar&city=unknown_xyz',
       '/api/route?city=unknown_xyz&fromLat=18.52&fromLng=73.85&toLat=18.53&toLng=73.86',
       '/api/health?city=unknown_xyz',
-      '/tiles/basemap/13/5897/3585.png?city=unknown_xyz'
+      '/tiles/basemap/13/5897/3585.png?city=unknown_xyz',
+      '/tiles/traffic/13/5897/3585.png?city=unknown_xyz'
     ]) {
       const r = await fetch(`${baseUrl}${badPath}`);
       assert.equal(r.status, 400, `Expected 400 for ${badPath}`);
@@ -488,7 +621,7 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     assert.equal(upstreamBudget.snapshot().tomtomNonTile, beforeBudget);
     assert.equal(fetchedUrls.length, 0);
 
-    // ?city=pune search bias & pre-built routeSchemasByCity
+    // Search and route still work on non-active city (Pune) and use Pune bias + pre-built routeSchemasByCity
     assert.equal(routeSchemasByCity.has('nagpur'), true);
     assert.equal(routeSchemasByCity.has('pune'), true);
     assert.equal(routeSchemasByCity.has('bengaluru'), true);
@@ -501,7 +634,6 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     assert.equal(searchUrl.includes('lon=73.855278'), true);
     assert.equal(searchUrl.includes('radius=30000'), true);
 
-    // Pune coordinates allowed on ?city=pune, rejected on default Nagpur
     const puneRouteOk = await fetch(
       `${baseUrl}/api/route?city=pune&fromLat=18.52&fromLng=73.85&toLat=18.59&toLng=73.74`
     );
@@ -511,15 +643,50 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     );
     assert.equal(puneRouteOnNagpur.status, 400);
 
-    // Basemap tile cache key includes viewTag (e.g. IN/light/z/x/y)
-    const tileRes = await fetch(`${baseUrl}/tiles/basemap/13/5897/3585.png?theme=light&city=pune`);
-    assert.equal(tileRes.status, 200);
-    assert.ok(basemapTileCache.get('IN/light/13/5897/3585'));
+    // View isolation for BOTH basemap and traffic tile caches (two different TomTom views never share a cached tile)
+    const nagpurCfg = getCity('nagpur');
+    assert.ok(nagpurCfg);
+    const noViewCity = { ...nagpurCfg, id: 'default-view-city', tomtomView: undefined };
+    setTestOverrides({
+      getCity: (id) => (id === 'default-view-city' ? noViewCity : getCity(id)),
+      hasCity: (id) => id === 'default-view-city' || hasCity(id),
+      fetch: async (url) => {
+        const u = String(url);
+        fetchedUrls.push(u);
+        if (u.includes('/map/1/tile/')) {
+          return makePngResponse(u.includes('view=IN') ? 'basemap-IN' : 'basemap-default');
+        }
+        return makePngResponse(u.includes('view=') || u.includes('city-tag=IN') ? 'traffic-IN' : 'traffic-default');
+      }
+    });
 
-    // Health ?city=pune reflects Pune junction count
-    const puneHealth = await (await fetch(`${baseUrl}/api/health?city=pune`)).json();
-    assert.equal(puneHealth.city, 'pune');
-    assert.equal(puneHealth.monitoredJunctions, 10);
+    const trafficIn1 = await fetch(`${baseUrl}/tiles/traffic/13/5897/3585.png?theme=light&city=nagpur`);
+    const trafficDefault1 = await fetch(
+      `${baseUrl}/tiles/traffic/13/5897/3585.png?theme=light&city=default-view-city`
+    );
+    assert.equal(trafficIn1.status, 200);
+    assert.equal(trafficDefault1.status, 200);
+    assert.ok(tileCache.get('IN/light/13/5897/3585'));
+    assert.ok(tileCache.get('default/light/13/5897/3585'));
+
+    const trafficCallsBeforeCache = fetchedUrls.filter((u) => u.includes('/traffic/map/4/tile/')).length;
+    assert.equal(trafficCallsBeforeCache, 2);
+    // Repeated hits reuse separate cache entries (0 new upstream fetches)
+    await fetch(`${baseUrl}/tiles/traffic/13/5897/3585.png?theme=light&city=nagpur`);
+    await fetch(`${baseUrl}/tiles/traffic/13/5897/3585.png?theme=light&city=default-view-city`);
+    assert.equal(
+      fetchedUrls.filter((u) => u.includes('/traffic/map/4/tile/')).length,
+      trafficCallsBeforeCache
+    );
+
+    const baseIn1 = await fetch(`${baseUrl}/tiles/basemap/13/5897/3585.png?theme=light&city=nagpur`);
+    const baseDefault1 = await fetch(
+      `${baseUrl}/tiles/basemap/13/5897/3585.png?theme=light&city=default-view-city`
+    );
+    assert.equal(await baseIn1.text(), 'basemap-IN');
+    assert.equal(await baseDefault1.text(), 'basemap-default');
+    assert.ok(basemapTileCache.get('IN/light/13/5897/3585'));
+    assert.ok(basemapTileCache.get('default/light/13/5897/3585'));
   });
 
   await t.test('Per-city freshness isolation and polling timer cleanup', async () => {
@@ -579,3 +746,75 @@ test('Integration suite: routes, mocked upstreams, failure paths, rate limits & 
     assert.equal(getActiveTimerCount(), 0);
   });
 });
+
+test(
+  'OS SIGTERM shuts down server cleanly with exit code 0 and zero polling timers (non-Windows)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const freePort = await new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', () => {
+        const addr = probe.address();
+        const port = addr && typeof addr === 'object' ? addr.port : 0;
+        probe.close(() => resolve(port));
+      });
+    });
+
+    const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, PORT: String(freePort), TOMTOM_API_KEY: '', NODE_ENV: 'development' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += d.toString();
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
+
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`Timeout waiting for listen log: ${stdout} ${stderr}`)),
+          5000
+        );
+        const onData = () => {
+          if (stdout.includes('listening on')) {
+            clearTimeout(timer);
+            resolve(undefined);
+          }
+        };
+        child.stdout.on('data', onData);
+        child.once('exit', (code) => {
+          clearTimeout(timer);
+          reject(new Error(`Child exited early (${code}): ${stdout} ${stderr}`));
+        });
+      });
+
+      const exitResult = await new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`SIGTERM shutdown timed out after 5s: ${stdout} ${stderr}`)),
+          5000
+        );
+        child.once('exit', (code, signal) => {
+          clearTimeout(timer);
+          resolve({ code, signal });
+        });
+        child.kill('SIGTERM');
+      });
+
+      assert.equal(exitResult.code, 0, `Expected exit 0, got ${JSON.stringify(exitResult)}`);
+      assert.equal(exitResult.signal, null);
+      assert.equal(stdout.includes('Received SIGTERM; shutting down gracefully...'), true);
+      assert.equal(stdout.includes('Active polling timers remaining: 0'), true);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
+    }
+  }
+);
