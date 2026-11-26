@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const net = require('node:net');
 const { z } = require('zod');
 
@@ -59,6 +60,8 @@ const envSchema = z.object({
     }),
   ALLOW_KEYLESS_START: z.string().optional().default(''),
   FEATURE_WEATHER_RISK: z.string().optional().default('true'),
+  MAX_ACTIVE_CITIES: z.coerce.number().int().min(1).max(10).default(1),
+  METRICS_TOKEN: z.string().optional().default('').transform((v) => v.trim()),
   CITY: z.string().optional()
 });
 
@@ -108,6 +111,8 @@ function loadConfig(env = process.env) {
     dailyTomTomTileBudget: data.DAILY_TOMTOM_TILE_BUDGET,
     trustProxy: data.TRUST_PROXY,
     featureWeatherRisk: data.FEATURE_WEATHER_RISK !== 'false' && data.FEATURE_WEATHER_RISK !== '0',
+    maxActiveCities: data.MAX_ACTIVE_CITIES,
+    metricsToken: data.METRICS_TOKEN,
     city: data.CITY
   };
 }
@@ -123,16 +128,31 @@ const tileParamsSchema = z
     message: 'Tile coordinates out of bounds for zoom level'
   });
 
+const cityIdParamSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9-]+$/);
+
+const stateQuerySchema = z
+  .object({
+    city: cityIdParamSchema.optional()
+  })
+  .strict();
+
 const tileQuerySchema = z
   .object({
     theme: z.enum(['light', 'dark']).optional(),
-    v: z.string().max(32).optional()
+    v: z.string().max(32).optional(),
+    city: cityIdParamSchema.optional()
   })
   .strict();
 
 const searchQuerySchema = z
   .object({
-    q: z.string().trim().min(2).max(100)
+    q: z.string().trim().min(2).max(100),
+    city: cityIdParamSchema.optional()
   })
   .strict();
 
@@ -146,7 +166,8 @@ function createRouteQuerySchema(bbox) {
       fromLat: z.coerce.number().min(bbox.south).max(bbox.north),
       fromLng: z.coerce.number().min(bbox.west).max(bbox.east),
       toLat: z.coerce.number().min(bbox.south).max(bbox.north),
-      toLng: z.coerce.number().min(bbox.west).max(bbox.east)
+      toLng: z.coerce.number().min(bbox.west).max(bbox.east),
+      city: cityIdParamSchema.optional()
     })
     .strict();
 }
@@ -447,11 +468,32 @@ class LatencyTracker {
   }
 }
 
+/**
+ * Constant-time verification of a `Bearer <token>` Authorization header.
+ * Returns false whenever expectedToken is empty or the header format does not match.
+ * @param {unknown} authHeader
+ * @param {unknown} expectedToken
+ */
+function isValidBearerToken(authHeader, expectedToken) {
+  if (typeof expectedToken !== 'string' || expectedToken.length === 0) return false;
+  if (typeof authHeader !== 'string') return false;
+  const prefix = 'Bearer ';
+  if (!authHeader.startsWith(prefix)) return false;
+  const presented = authHeader.slice(prefix.length).trim();
+  if (!presented) return false;
+  const presentedDigest = crypto.createHash('sha256').update(presented).digest();
+  const expectedDigest = crypto.createHash('sha256').update(expectedToken).digest();
+  return crypto.timingSafeEqual(presentedDigest, expectedDigest);
+}
+
 module.exports = {
   ALLOWED_UPSTREAM_HOSTS,
   DEFAULT_UPSTREAM_TIMEOUT_MS,
   MAX_XFF_HEADER_LENGTH,
   loadConfig,
+  isValidBearerToken,
+  cityIdParamSchema,
+  stateQuerySchema,
   tileParamsSchema,
   tileQuerySchema,
   searchQuerySchema,

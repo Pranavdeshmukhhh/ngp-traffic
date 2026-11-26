@@ -14,10 +14,10 @@ Powered by **TomTom Traffic, Map Display & Routing APIs** and **Open-Meteo** wea
    - Proxies TomTom Map Display raster basemaps (`main` for light mode, `night` for dark mode, `tileSize=512`, `view=IN`) with a 10-minute bounded in-memory cache (`800` tiles max), falling back cleanly to OpenStreetMap if keyless.
    - Proxies TomTom Traffic Flow Raster Tiles (`relative0` / `relative0-dark`, `tileSize=512`) on the backend so `TOMTOM_API_KEY` never reaches the browser, with a 120s bounded cache (`500` tiles max) and `Cache-Control: public, max-age=120`.
 2. **Quota-Safe Real-Time Polling + Per-Source Freshness**
-   - **Flow Segment Data**: Polls 16 key Nagpur corridors from `config/cities/nagpur.json` every 4 minutes **only while active Socket.IO clients are connected**.
-   - **Traffic Incidents v5**: Polls Nagpur bounding box (`78.95,21.05,79.20,21.25`) every 12 minutes while clients are online.
+   - **Flow Segment Data**: Polls 16 key Nagpur corridors from `config/cities/nagpur.json` using a budget-aware interval **only while active Socket.IO clients are connected**. With the default budget the server refreshes flow about every 15 min; raise `DAILY_TOMTOM_NON_TILE_BUDGET` to match your real plan for faster updates. The default `2000` is a conservative safety net, not a verified TomTom plan limit.
+   - **Traffic Incidents v5**: Polls Nagpur bounding box (`78.95,21.05,79.20,21.25`) using a budget-aware cadence while clients are online.
    - **Open-Meteo Weather**: Polls Nagpur weather (`21.1458, 79.0882`) every 15 minutes (free non-commercial tier, CC BY 4.0, no API key required).
-   - **Freshness Telemetry**: Tracks per-source `lastSuccessAt` (`flow`, `incidents`, `weather`) and computes `stale` + `staleSources` over Socket.IO (`traffic:state`) and `/api/health`. Failed polls never advance `updatedAt`.
+   - **Freshness Telemetry**: Tracks per-source `lastSuccessAt` (`flow`, `incidents`, `weather`) and computes `stale` + `staleSources` over Socket.IO (`traffic:state`) and `/api/health` (`2 * intervalMs + 60s grace`). Inactive cities report `polled: false, stale: true` without making upstream calls. Failed polls never advance `updatedAt`.
 3. **Deployment Advisory Engine (`predictDeployments` — Heuristic Model Estimates)**
    - **Free-Flow Guard**: Never flags free-flowing junctions (`congestionPct < 15%`) unless `roadClosure === true` or a verified accident (`iconCategory === 1`) is within `100 m`.
    - **Road Clearing Needed (`HIGH`)**: Active `roadClosure`, roadworks/closure incident within `150 m` with `>= 25%` congestion, or Nagpur rainfall `>= 5 mm/hr` with `>= 50%` congestion.
@@ -60,14 +60,22 @@ Open `http://localhost:3000`.
 | `PORT` | No | `3000` | HTTP server port |
 | `TRUST_PROXY` | No | `0` | Trusted reverse-proxy hop count (`0–5`; set `1` behind Render/Nginx — verify hop count for your host) |
 | `ALLOWED_ORIGIN` | No | `*` | Allowed CORS origin(s), comma-separated |
+| `CITY` | No | `nagpur` | Default city ID loaded from `config/cities/<id>.json` |
+| `MAX_ACTIVE_CITIES` | No | `1` | Maximum concurrent active cities for background polling (`1–10`) |
+| `DAILY_TOMTOM_NON_TILE_BUDGET` | No | `2000` | Daily cap for non-tile TomTom calls (`10–100000`; default is a conservative safety net, not a verified plan limit — raise to match your plan) |
+| `METRICS_TOKEN` | No | `""` | Bearer token protecting `GET /api/metrics` (endpoint returns `404` when unset) |
 
 ## API Endpoints
 
-- `GET /api/health` — Server status, `tomtomConfigured`, `updatedAt`, per-source `lastSuccessAt`, `stale`, `staleSources`, active Socket.IO clients, alert count
-- `GET /tiles/basemap/:z/:x/:y.png` — Cached TomTom light/dark basemap tile proxy (`?theme=light|dark`)
-- `GET /tiles/traffic/:z/:x/:y.png` — Cached TomTom live traffic flow tile proxy (`?theme=light|dark`)
-- `GET /api/search?q=...` — Nagpur-biased place autocomplete
-- `GET /api/route?fromLat=&fromLng=&toLat=&toLng=` — Parallel fastest & shortest live routes
+- `GET /api/cities` — `{ defaultCityId, ids, cities }` catalog of registered cities
+- `GET /api/cities/:id` — Full public metadata, landmarks, junctions, and thresholds for a registered city
+- `GET /api/state?city=<id>` — Live traffic, incidents, weather, and advisory snapshot for an actively polled city; returns `{ polled: false, stale: true, lastSuccessAt: null, ... }` for unpolled cities with zero upstream calls
+- `GET /api/health?city=<id>` — Minimal public health status (`status`, `city`, `defaultCityId`, `tomtomConfigured`, `monitoredJunctions`, `polled`, `stale`, `lastSuccessAt`, `flowIntervalMs`)
+- `GET /api/metrics?city=<id>` — Bearer-protected (`METRICS_TOKEN`) operational diagnostics, cache stats, budget snapshot, and `pollSchedule` (`404` when token unset, `401` on invalid bearer)
+- `GET /tiles/basemap/:z/:x/:y.png?theme=light|dark&city=<id>` — Cached TomTom light/dark basemap tile proxy (view-isolated per city)
+- `GET /tiles/traffic/:z/:x/:y.png?theme=light|dark&city=<id>` — Cached TomTom live traffic flow tile proxy (view-isolated per city)
+- `GET /api/search?q=...&city=<id>` — City-biased place autocomplete (defaults to `CITY`)
+- `GET /api/route?fromLat=&fromLng=&toLat=&toLng=&city=<id>` — Parallel fastest & shortest live routes validated against the city's `routeBbox`
 
 ## Testing
 
